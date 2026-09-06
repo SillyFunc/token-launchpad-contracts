@@ -269,6 +269,18 @@ struct PresaleConfig {
 | 3 | 已开盘 | `claim` / `withdrawRemainingBNB`（未售出份额已在 `launch` 时销毁，无提取入口） |
 | 4 | 发行失败（未达 softCap 或 72h 未开盘） | `refund`（散户）/ `reclaimTokens`（创建者）/ `relaunchPresale`（创建者，须全员退款完毕，回状态 0 重开新一轮） |
 
+**模式判定：纯发币 vs 预售**——读 `presale.presaleEnabled()`（一次性烙印，`setupPresale` 时刻置位后终生不变，份额锁后连 owner 也改不了）：
+
+| `presaleEnabled` | `presaleStatus` | 含义 |
+|---|---|---|
+| `false` | 0 | 纯发币：`claimAllTokens` 前/后用 `tokensClaimed` 区分 |
+| `true` | 0 | 预售：配置期（或失败重开的新一轮，看 `presaleRound`） |
+| `true` | 1 / 2 | 预售：认购中 / 待开盘 |
+| `true` | 3 | 预售：成功开盘（终态） |
+| `true` | 4 | 预售：失败（refund / reclaim / relaunch 窗口） |
+
+注意纯发币领取（`claimAllTokens`）与预售失败回收（`reclaimTokens`）的**代币终态相同**（`state ≥ 2`、owner 归零、创建者全量持仓，"领取即上线"），唯一稳定区分是 `presaleEnabled`；勿用代币分布或 `token.owner()` 推断（三种终态下均不可区分）。列表页批量判定：按 `TokenPresalePairCreated` 建 token→presale 映射后批量读 `presaleEnabled`，比事件扫描更简单。
+
 ### 4.2 代币 `token.state()`（PoolState，克隆代理上读）
 
 | 值 | 含义 | 税 |
@@ -641,6 +653,7 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 | 函数 | 用途 |
 |---|---|
 | `getLaunchStatus()` | `(enabled, status, bnbAccumulated, tokensSubscribed, lpAdded, tokensClaimed)` 一次拉齐 |
+| `presaleEnabled()` / `presaleStatus()` | **模式判定**（纯发币 vs 预售，见 4.1 判定表）+ 生命周期状态 |
 | `getContractBalances()` | `(tokenBalance, bnbBalance)` |
 | `getVestedAmount(user)` | 当前可领 vesting 数量 |
 | `getUserVestingStatus(user)` | `(share, claimable, claimed, nextVestingTime)` |
@@ -695,6 +708,8 @@ const presaleAbi = parseAbi([
   "function claimAllTokens()", "function subscribe() payable",
   "function lpAddress() view returns (address)",
   "function presaleTokenPrice() view returns (uint256)",
+  "function presaleEnabled() view returns (bool)",
+  "function presaleStatus() view returns (uint256)",
   "function getLaunchStatus() view returns (bool, uint256, uint256, uint256, bool, bool)",
   "error PresaleNotOpen()", "error WalletLimitExceeded()",
 ]);
