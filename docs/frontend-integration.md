@@ -119,9 +119,9 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 | ③ | `presale.openPresale()` | 创建者 | — | `presaleStatus == 0` |
 | ④ | `presale.subscribe()` × N | 散户 | 认购 BNB | `presaleStatus == 1` 且 `startTime ≤ now < endTime` |
 | ⑤ | `presale.endPresale()` | 创建者（随时）/ 任何人（过 `endTime` 后） | — | `presaleStatus == 1` |
-| ⑥ | `presale.launch()` | 创建者 | — | `presaleStatus == 2`、`accumulatedBNB ≥ minLiquidityAmount` 且未过 72h（见下） |
+| ⑥ | `presale.launch()` | 创建者 | — | `presaleStatus == 2`、`accumulatedBNB ≥ minLiquidityAmount`（超 72h 后任何人可先 enforce 翻失败封锁开盘，见下） |
 
-`endTime = max(openPresale 时刻, startTime) + duration`：晚开盘不缩水认购窗口。**硬顶恰达自动结算**：某笔认购使 `accumulatedBNB` 恰好等于 `hardcap` 时，该笔交易成交后同笔完成结束判定（1→2，`emit PresaleEnded`）——达硬顶即闭市，无需等 ⑤；超额认购照旧 revert（`HardcapReached`，调小金额重试）。**72h 开盘窗口**：进入状态 2 后 72 小时（`LAUNCH_DEADLINE` 常量）内未 `launch()`，任何人可调 `presale.enforceLaunchDeadline()` 翻转为发行失败（状态 4）开放退款——前端应在进入状态 2 后展示 72h 倒计时。
+`endTime = max(openPresale 时刻, startTime) + duration`：晚开盘不缩水认购窗口。**硬顶恰达自动结算**：某笔认购使 `accumulatedBNB` 恰好等于 `hardcap` 时，该笔交易成交后同笔完成结束判定（1→2，`emit PresaleEnded`）——达硬顶即闭市，无需等 ⑤；超额认购照旧 revert（`HardcapReached`，调小金额重试）。**72h 开盘窗口**：进入状态 2 后 72 小时（`LAUNCH_DEADLINE` 常量）内未 `launch()`，任何人可调 `presale.enforceLaunchDeadline()` 翻转为发行失败（状态 4）开放退款——前端应在进入状态 2 后展示 72h 倒计时。注意 `launch()` 本身不检查 72h：超时但尚无人 enforce 时创建者仍可开盘（与 SmartDeFi 的 opt-in enforce 语义一致），enforce 之后才被状态闸（`presaleStatus != 2`）永久封锁。
 
 `launch()` 一笔内自动：`startMigration → 加池(20% 底池份额 + 全部募资 BNB, LP 死锁 0xdead) → 未售出预售份额销毁(0xdead) → 创建者购买(若注资) → finalizeMigration(税生效) → renounceOwnership`。**无需任何手动移交/迁移操作。**
 
@@ -199,7 +199,7 @@ struct TokenConfig {
 
 注意事项：
 - `buyTax`/`sellTax` 超过 1000 bps 直接 revert（`InvalidPrice` 之外的 `TokenFactory` 校验），前端滑杆限制 0–10%
-- 代币固定 **18 位小数**、固定总量（读 `token.maxSupply()`，**前端严禁硬编码**；main 代码已恢复主网口径 `1e9 ether` = 10 亿枚，链上当前部署仍为 `1e6 ether` = 100 万枚测试口径，以读链为准）
+- 代币固定 **18 位小数**、固定总量（读 `token.maxSupply()`，**前端严禁硬编码**；当前测试网部署（2026-09-04）已为 `1e9 ether` = 10 亿枚主网口径，仍以读链为准——更早的 100 万枚口径代币属于旧部署，判定特征见 7.8）
 - 代币支持 ERC20Permit（`permit` 签名授权可用）
 
 ### 3.2 `PresaleConfig`（预售配置，11 字段，仅 `setupPresale` 一次性生效）
@@ -219,8 +219,8 @@ struct PresaleConfig {
     uint256 vestingDelay;         // vesting 周期长度（秒）：testnet 分支 1 分钟 ≤ x ≤ 90 天（主网口径 7 天）
     uint256 vestingRate;          // 每周期释放百分比：5 ≤ x ≤ 20
     uint256 slippage;             // 加池滑点保护 bps，0 ≤ x ≤ 1000（0 = 用默认 5%）
-    uint256 creatorBuyTokens;     // 创建者购买目标（代币 wei）；0 = quote 模式（花掉全部注资随行就市）
-                                  //   上限 = 底池份额 × 25%
+    uint256 creatorBuyTokens;     // 创建者购买目标（代币 wei）；0 = quote 模式（随行就市买入，花费有上限，
+                                  //   见 3.3）；上限 = 底池份额 × 25%
 }
 ```
 
@@ -243,8 +243,8 @@ struct PresaleConfig {
 ### 3.3 `setupPresale` 的 msg.value 语义（创建者购买注资）
 
 - `msg.value == 0`：不注资，`launch` 行为与无购买完全一致
-- `msg.value > 0` 且 `creatorBuyTokens == 0`（quote 模式）：launch 时花掉全部注资随行就市买入
-- `msg.value > 0` 且 `creatorBuyTokens > 0`（token 模式）：精确买入目标数量，超额同交易退回
+- `msg.value > 0` 且 `creatorBuyTokens == 0`（quote 模式）：launch 时随行就市买入，**花费上限 = 开盘池 BNB 的 1/3**（`MAX_CREATOR_BUY_POOL_BPS = 2500`，恒定乘积下恰为买走 25% 池代币的花费）——注资超出上限的部分、以及 swap 失败的全额，都会同交易退回创建者
+- `msg.value > 0` 且 `creatorBuyTokens > 0`（token 模式）：精确买入目标数量，实际花费按池价计算，超额同交易退回
 - 误注资可撤回：`presale.withdrawCreatorBuy()`（开盘前任意状态可用）
 
 ### 3.4 `subscribe` 的到账公式
@@ -370,7 +370,7 @@ const priceInBNB = bnbReserve / tokenReserve   // 代币与 WBNB 均 18 位小�
 实现要点：
 
 ```js
-const totalSupply = await token.totalSupply()   // 只读一次并缓存（恒定；勿硬编码：链上现为 1M 测试口径，重新部署后 1B）
+const totalSupply = await token.totalSupply()   // 只读一次并缓存（恒定；勿硬编码，以读链为准）
 const priceBNB  = Number(bnbReserve) / Number(tokenReserve)
 const mcapUSD   = priceBNB * bnbUsd * Number(totalSupply) / 1e18
 ```
@@ -539,7 +539,7 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 - `setupPresale` 是**一次性**的：条款配置后不可修改（`AlreadyConfigured`），前端提交前给确认弹窗。**重开新一轮**（`relaunchPresale`）不经过 coordinator：创建者直接调 presale 实例的配置类 setter（`setPresaleTerms` 等，此时 `onlyConfigPhase` 已复活）重设条款，或沿用旧条款直接 `openPresale()`——`tokenConfigured` 一次性闸只约束 coordinator 路径，不受直调影响
 - `subscribe` 的硬顶/限购/售罄在**同笔交易内原子校验**，无需前端预检（但预读做按钮置灰体验更好）；恰达硬顶的那笔交易会**同笔结束预售**（事件序列 `Subscribed` → `PresaleEnded`），前端订阅 `PresaleEnded` 即可刷新状态，无需轮询
-- vesting 领取公式：`已释放 = 份额 × vestingRate × 已过周期数 / 100`，周期 = `(now - vestingStart) / vestingDelay`；开盘后下一个周期边界前可领为 0（正常，显示"下期释放时间"用 `getUserVestingStatus` 的 `nextVestingTime`）
+- vesting 领取公式：`已释放 = min(份额 × vestingRate × 已过周期数 / 100, 份额)`——**累计释放封顶 100% 份额**（如 10%×11 周期只按 100% 计，不会到 110%），实际可领 = 已释放 − 已领；周期 = `(now - vestingStart) / vestingDelay`；开盘后下一个周期边界前可领为 0（正常，显示"下期释放时间"用 `getUserVestingStatus` 的 `nextVestingTime`）
 - `claim` / `refund` 对散户**免 owner 校验**（各领各的）；`claimAllTokens` / `launch` / `reclaimTokens` / `relaunchPresale` 仅创建者；`endPresale` / `enforceLaunchDeadline` 为受控公开（见 2.2/2.3 触发权表）
 - 代币克隆实例地址即 ERC20 合约地址，`name/symbol/decimals/balanceOf/permit` 全套标准接口可用
 
@@ -636,6 +636,23 @@ const pairAbi = parseAbi([
 const tokenAbi = parseAbi(["function totalSupply() view returns (uint256)"]);
 
 // ---------- ① 发币（纯发币模式） ----------
+// 8888-only 体系：salt 必须是"搜好的尾号 8888 盐"（零盐/非 8888 盐直接 revert，
+// 见 2.4）。最小可行搜盐示例（生产建议 Web Worker 内跑并带随机种子派生）：
+const TOKEN_FACTORY = "0x1d60B1DD9dF8d4FE7EE0B99d48333C06C01912Ca";
+const IMPL = "0x835Eb5BB068ccb1DB72Ca58f18466fab06A08ED8"; // tokenFactory.flapImplementation()
+const INIT_CODE = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73"
+  + IMPL.toLowerCase().slice(2) + "5af43d82803e903d91602b57fd5bf3";
+function predict(salt: bigint) {                       // EIP-1014 / EIP-1167
+  return keccak256(concat(["0xff", TOKEN_FACTORY, pad(toHex(salt, 32)), keccak256(INIT_CODE)]));
+}
+function searchSalt(seed: bigint) {                    // 平均 65536 次，秒级
+  for (let i = 0n; ; i++) {
+    const salt = keccak256(concat([toHex(seed, 32), toHex(i, 32)]));  // 随机种子派生，严禁从 0 递增
+    if (predict(salt).endsWith("8888")) return salt;
+  }
+}
+const salt = searchSalt(Date.now());  // 一次性搜好，可先 reserveTokenAddress 锁定（见 2.4）
+
 const fee = await client.readContract({ address: COORDINATOR, abi: coordinatorAbi, functionName: "creationFee" });
 const hash = await wallet.writeContract({
   address: COORDINATOR, abi: coordinatorAbi, functionName: "createToken", account,
@@ -643,7 +660,7 @@ const hash = await wallet.writeContract({
     name: "MyToken", symbol: "MTK", meta: "ipfs://Qm...",
     buyTax: 200, sellTax: 300, feeRecipient: account,
     taxDuration: 365n * 86400n, antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
-  }, "0x0000000000000000000000000000000000000000000000000000000000000000"],
+  }, salt],
   value: fee,   // 多退少不补
 });
 const rc = await client.waitForTransactionReceipt({ hash });
