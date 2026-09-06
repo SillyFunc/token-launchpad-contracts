@@ -379,6 +379,75 @@ const mcapUSD   = priceBNB * bnbUsd * Number(totalSupply) / 1e18
 - 市值更新与价格共用同一 `Sync` 订阅，无额外请求
 - 若产品要做更严的"流通盘"口径（剔除托管仓/创建者持仓）需自建账本——对 meme 发射平台不建议，固定总量代币 MCap=FDV 是扫描器与竞品的通行展示
 
+### 5.6 买卖交易（dapp 内置 Swap 面板）
+
+代币是标准 PancakeSwap V2 `token/WBNB` 交易对上的 ERC20，dapp 买卖 = 直接调路由合约，**无需任何平台合约中转**。
+
+**前置闸门（交易入口显隐判断）**：
+
+```js
+const [state, reserves] = await Promise.all([
+  client.readContract({ address: token, abi: tokenAbi, functionName: "state" }),
+  client.readContract({ address: pair, abi: pairAbi, functionName: "getReserves" }),
+]);
+const tradable = state >= 2 && (reserves[0] > 0n && reserves[1] > 0n); // 已上线 且 池子双侧有储备
+```
+
+`state == 0`（BondingCurve）下对池转账被代币合约硬性拒绝（"Transfers to/from pools are restricted"），买卖入口必须隐藏而非仅置灰——此时交易必然失败。
+
+**买入（支付 BNB → 得代币）**：`swapExactETHForTokensSupportingFeeOnTransferTokens`，一笔交易：
+
+```js
+// 报价（不含买入税）：getAmountsOut 为纯储备数学
+const quoted = await client.readContract({
+  address: ROUTER, abi: routerAbi, functionName: "getAmountsOut",
+  args: [bnbIn, [WBNB, token]],
+});
+// 实收 = 报价 × (1 − buyTax/10000)；amountOutMin 再留滑点余量
+const buyTax = await client.readContract({ address: token, abi: tokenAbi, functionName: "buyTaxRate" });
+const minOut = quoted[1] * (10000n - buyTax) / 10000n * (10000n - slippageBps) / 10000n;
+
+await wallet.writeContract({
+  address: ROUTER, abi: routerAbi, account,
+  functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
+  args: [minOut, [WBNB, token], account, BigInt(Math.floor(Date.now() / 1000)) + 600],
+  value: bnbIn,
+});
+```
+
+**卖出（支付代币 → 得 BNB）**：approve + swap 两笔。**必须用 Supporting 变体**——卖税在"卖方 → 池"的转账中被扣走，池子实际到账少于名义数量，标准 swap 变体的 K 值校验必然 revert：
+
+```js
+// ① 授权（建议按实际卖出量授权，或用户确认后无限授权）
+await wallet.writeContract({
+  address: token, abi: tokenAbi, account,
+  functionName: "approve", args: [ROUTER, sellAmount],
+});
+
+// ② 卖出
+const [quoted, sellTax] = await Promise.all([
+  client.readContract({ address: ROUTER, abi: routerAbi, functionName: "getAmountsOut",
+    args: [sellAmount, [token, WBNB]] }),
+  client.readContract({ address: token, abi: tokenAbi, functionName: "sellTaxRate" }),
+]);
+const minOut = quoted[1] * (10000n - sellTax) / 10000n * (10000n - slippageBps) / 10000n;
+
+await wallet.writeContract({
+  address: ROUTER, abi: routerAbi, account,
+  functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
+  args: [sellAmount, minOut, [token, WBNB], account, BigInt(Math.floor(Date.now() / 1000)) + 600],
+});
+```
+
+买入侧两个 swap 变体技术上均可用（买入税在"池 → 买方"输出端扣，池子流出量足额），统一用 Supporting 变体最省心。
+
+**税率是动态的，随时间归零**：`taxDuration`（发币配置）到期后代币自动进入 TaxFree（税率归零），前端每次报价都实时读 `buyTaxRate()/sellTaxRate()`，勿缓存——税过期后公式自然算出全额，无需特判。
+
+**体验与 gas 注意**：
+- 卖向主池的转账会触发税仓清算检查：累计税款达到清算阈值（`liquidationThreshold()`，动态调整）时，该笔卖出同交易附带"税代币 swap 成 BNB → feeRecipient"——gas 明显上浮、且清算本身向同池卖出带来轻微额外价格影响。偶发、预期内，钱包端 gas 估算需容忍
+- 报价页的扣税展示口径见 7.3 节（买入实收/卖出到池），此处不重复
+- anti-farmer 防夹窗口内买卖税率与常规一致（防的是夹子机器人的换汇路径，不额外惩罚普通买卖）
+
 ---
 
 ## 6. 错误对照表
