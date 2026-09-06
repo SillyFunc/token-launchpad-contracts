@@ -127,6 +127,8 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 
 > **未售出代币销毁**：对齐 SmartDeFi Bonding Curve Finalization 语义——加池时未售出的预售份额（`presaleShare - totalSubscribedTokens`）即时销毁（转 `0xdead`），无任何提取入口。前端可用公开视图 `presaleShare - totalSubscribedTokens` 自行计算展示"将销毁数量"。
 
+> **开盘终检（openPresale 冻结条款前的最后一道闸）**：以下注定失败/违约的配置一律拒开——`price = 0`（`InvalidPrice`）、`duration = 0`（`InvalidDuration`）、`maxPresaleTokens = 0 或 > presaleShare`（`InvalidMaxPresaleTokens`，超募将导致 claim 缺口）、`softCap < minLiquidityAmount`（`SoftCapTooLow`）、`minLiquidityAmount = 0`（`ZeroMinLiquidity`）、`softCap > hardcap`（hardcap > 0 时，`SoftCapExceedsHardcap`）。平台 `setupPresale` 路径恒满足全部条件；仅创建者直调 setter 的乱序配置可能触发，被拒后在配置期修正配置重新调用即可（拒开不消耗状态）。
+
 开盘后（`presaleStatus == 3`）：
 
 | 动作 | 调用者 | 说明 |
@@ -482,7 +484,7 @@ await wallet.writeContract({
 | selector | 错误 | 触发场景 | 建议文案 |
 |---|---|---|---|
 | `0xe87ff4be` | PresaleDisabled | 纯发币模式下调了预售函数 | 该代币未开启预售 |
-| `0x00bfc921` | InvalidPrice | 预售价为 0 | 价格非法 |
+| `0x00bfc921` | InvalidPrice | 预售价为 0（setPresaleTerms / openPresale 终检） | 价格非法 |
 | `0x755f0ed3` | InvalidVestingDelay | vestingDelay 超出 1 分钟 ~ 90 天（testnet 分支标定） | 领取周期须在 1 分钟 ~ 90 天之间 |
 | `0x416c61ed` | InvalidVestingRate | vestingRate 超出 5 ~ 20 | 每期释放比例须在 5%~20% |
 | `0xf525e320` | InvalidStatus | 状态不对（各类状态守卫兜底） | 当前状态不可执行该操作 |
@@ -490,7 +492,7 @@ await wallet.writeContract({
 | `0x4e16195c` | PresaleNotStarted | 早于 startTime | 预售尚未开始 |
 | `0x312c6e32` | PresaleExpired | 过 endTime 后 subscribe | 预售已到期 |
 | `0x3deb266e` | PresaleNotExpired | 非 owner 在到期前调 endPresale | 预售尚未到期，仅创建者可提前结束 |
-| `0x76166401` | InvalidDuration | duration 超出 1 分钟 ~ 30 天（testnet 分支标定） | 认购时长须在 1 分钟 ~ 30 天之间 |
+| `0x76166401` | InvalidDuration | duration 超出 1 分钟 ~ 30 天（testnet 分支标定）；openPresale 遇 duration = 0 | 认购时长须在 1 分钟 ~ 30 天之间 |
 | `0x742e3c2b` | LaunchDeadlineNotReached | 状态 2 未满 72h 就调 enforceLaunchDeadline | 尚在开盘窗口期内 |
 | `0x0d3e2916` | RefundsOutstanding | 退款未清零就调 relaunchPresale | 须等待全部认购者退款完毕 |
 | `0x174a9bcf` | EscrowDrained | 代币已领取（仓空）后调 relaunchPresale | 代币已回收，无法重开 |
@@ -502,7 +504,8 @@ await wallet.writeContract({
 | `0x5be90159` | HardcapReached | 超募资硬顶 | 已达硬顶 |
 | `0xbf64110f` | InsufficientBNB | launch 时募资 < minLiquidity | 流动性门槛未达 |
 | `0xe4b16145` | SoftCapTooLow | softCap < minLiquidity | 软顶须不小于加池下限 |
-| `0xc0e1152e` | SoftCapExceedsHardcap | softCap > hardcap（hardcap > 0 时） | 软顶不可超过硬顶 |
+| `0xc0e1152e` | SoftCapExceedsHardcap | softCap > hardcap（hardcap > 0 时；setSoftCap / openPresale 终检） | 软顶不可超过硬顶 |
+| `0x5668bc6c` | InvalidMaxPresaleTokens | openPresale 遇 maxPresaleTokens = 0 或 > presaleShare | 认购上限须为 1 ~ 预售份额 |
 | `0xff3bfcc7` | ZeroMinLiquidity | setPresaleTerms/openPresale 遇 minLiquidityAmount = 0 | 加池下限必须大于 0 |
 | `0xa4f81929` | TokensAlreadyClaimed | 重复领取/领取后再开预售 | 已领取，不可重复 |
 | `0x969bf728` | NothingToClaim | 可领额度为 0（未到周期/已领完） | 暂无可领取份额 |

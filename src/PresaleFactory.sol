@@ -39,6 +39,12 @@ contract PresaleFactory is AccessControl {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(COORDINATOR_ROLE, _coordinator);
         presaleImplementation = _presaleImplementation;
+
+        // 锁定实现合约：以占位参数初始化模板本体，使其 _initialized 置位、任何人
+        // （含恶意方）都无法再 initialize 实现合约并伪装其归属（克隆存储各自独立，
+        // 不受模板初始化状态影响；EIP-1167 标准加固，对齐 OZ _disableInitializers 语义）。
+        // 模板未部署（地址无代码）时本调用回滚，工厂部署随之失败，配置事故在部署期暴露
+        PRESALE(payable(_presaleImplementation)).initialize(address(1), address(1));
     }
 
     /// @dev 克隆并创建未配置的托管仓（owner=工厂，配置完成后移交上层）。
