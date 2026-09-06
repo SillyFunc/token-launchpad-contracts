@@ -17,7 +17,8 @@ import {
     HardcapReached,
     InvalidStatus,
     PresaleNotOpen,
-    NotLaunched
+    NotLaunched,
+    SharesLocked
 } from "src/Presale.sol";
 
 contract MockRouter {
@@ -349,6 +350,57 @@ contract PresaleDurationTest is Test {
         vm.prank(alice);
         vm.expectRevert(); // Ownable: caller is not the owner
         presale.relaunchPresale();
+    }
+
+    // ---------------------------------------------------------------------------
+    // 8.5) 份额治理：一次性写入锁（创建者任何轮次不可改，管理员比例全生命周期生效）
+    // ---------------------------------------------------------------------------
+
+    /// @notice 第二轮配置期（relaunch 后 onlyConfigPhase 复活）：创建者改商业条款照常，
+    ///         改份额三字段被 SharesLocked 拒绝——第一轮 setupPresale 写入的管理员比例沿用
+    function test_RelaunchCreatorCannotRewriteShares() public {
+        _failAndRefundAll();
+        presale.relaunchPresale();
+        assertEq(presale.presaleStatus(), 0, "back to config phase");
+
+        // 商业条款可改（重开的核心诉求：换个价/换个窗口再试）
+        presale.setPresaleTerms(2e15, presaleShare, 5e7 ether, 0, 0.05 ether, 0, 7 days);
+        presale.setSoftCap(0.05 ether);
+        assertEq(presale.presaleTokenPrice(), 2e15);
+
+        // 份额不可改：90/5/5 的自肥配置被拒，三字段保持 30/20/50
+        vm.expectRevert(SharesLocked.selector);
+        presale.configureLaunch(true, address(this), SUPPLY * 90 / 100, SUPPLY * 5 / 100, SUPPLY * 5 / 100);
+        assertEq(presale.creatorShare(), creatorShare, "shares untouched");
+        assertEq(presale.poolShare(), poolShare, "shares untouched");
+        assertEq(presale.presaleShare(), presaleShare, "shares untouched");
+
+        // 沿用第一轮份额 + 新条款正常开盘
+        presale.openPresale();
+        assertEq(presale.presaleStatus(), 1);
+    }
+
+    /// @notice 第一轮配置期内二次 configureLaunch 同样被拒（一次性写入，无轮次例外）
+    function test_RevertWhen_ConfigureLaunchTwiceInFirstRound() public {
+        vm.expectRevert(SharesLocked.selector);
+        presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
+    }
+
+    /// @notice 份额锁与纯发币出口的关系：失败态（状态 4）下 configureLaunch 先被 onlyConfigPhase
+    ///         状态闸拒绝（锁是 relaunch 后配置期的纵深防御）；纯发币出口走 reclaimTokens
+    ///         （领币+迁移+renounce），不依赖 configureLaunch 的模式开关
+    function test_FailedToCustodyExitViaReclaimNotConfigure() public {
+        _failAndRefundAll();
+
+        // FAILED 态：配置函数被状态闸封锁（4 != 0），模式开关/份额均不可触碰
+        vm.expectRevert(InvalidStatus.selector);
+        presale.configureLaunch(false, address(0), 0, 0, 0);
+
+        // 纯发币出口走 reclaimTokens：全量代币 + 同笔迁移 + renounce
+        presale.reclaimTokens();
+        assertEq(token.balanceOf(address(this)), SUPPLY);
+        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.TaxEnforcedAntiFarmer));
+        assertEq(token.owner(), address(0));
     }
 
     function test_RevertWhen_RelaunchAfterReclaim() public {

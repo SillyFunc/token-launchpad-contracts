@@ -54,6 +54,7 @@ error PresaleNotExpired();
 error LaunchDeadlineNotReached();
 error RefundsOutstanding();
 error EscrowDrained();
+error SharesLocked();
 
 /// @notice 代币迁移操作接口（FlapTaxTokenV3 最小子集）
 interface ITokenMigration {
@@ -156,6 +157,13 @@ contract PRESALE is Ownable, ReentrancyGuard {
     // === 纯发币模式 ===
     bool public tokensClaimed;
 
+    /// @notice 份额一次性写入锁：configureLaunch 首次写份额后置位，此后任何轮次（含 relaunch
+    ///         复活的配置期）都不可再写——分配比例全生命周期仅管理员可变（第一轮经
+    ///         CoordinatorFactory.setupPresale 按平台比例写入），创建者直调后门永久封死。
+    ///         relaunch 后份额沿用第一轮的合法值；模式开关（presaleEnabled）与本锁同闸：
+    ///         失败后转纯发币走 reclaimTokens 出口，不经 configureLaunch
+    bool private _sharesLocked;
+
     bool private _initialized;
 
     event PresaleConfigured(
@@ -236,6 +244,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         uint256 _presaleShare
     ) external onlyOwnerOrConfigurator onlyConfigPhase {
         if (tokensClaimed) revert TokensAlreadyClaimed(); // 抽干托管仓后禁止重开预售，封死“领完全量代币再设局募资”骗局
+        if (_sharesLocked) revert SharesLocked(); // 份额一次性写入：首轮 setup 后永久锁定（relaunch 不复活）
         if (_presaleEnabled) {
             if (_creator == address(0)) revert InvalidCreator();
             if (_creatorShare + _poolShare + _presaleShare == 0) revert EmptyAllocation();
@@ -245,7 +254,17 @@ contract PRESALE is Ownable, ReentrancyGuard {
         creatorShare = _creatorShare;
         poolShare = _poolShare;
         presaleShare = _presaleShare;
+        _sharesLocked = true;
         emit PresaleConfigured(_presaleEnabled, _creator, _creatorShare, _poolShare, _presaleShare);
+    }
+
+    /// @notice 纯托管模式初始化（PresaleFactory.createPresale 专用）：仅关闭预售开关，
+    ///         不写份额、不消耗一次性写入锁——真正的份额写入名额留给 setupPresale
+    /// @dev 与 configureLaunch(false,...) 的差异：后者会置位 _sharesLocked，令后续
+    ///      setupPresale 的合法份额写入被 SharesLocked 误拒（工厂初始化 ≠ 配置）
+    function setCustodyMode() external onlyOwnerOrConfigurator onlyConfigPhase {
+        if (tokensClaimed) revert TokensAlreadyClaimed();
+        presaleEnabled = false;
     }
 
     function setPresaleTerms(
