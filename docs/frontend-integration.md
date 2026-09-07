@@ -1,6 +1,7 @@
 # 前端对接文档 — Token Launchpad（BSC 测试网）
 
 > 合约版本：2026-09-04 部署（feat/presale-duration 分支 @ aa6429b：预售时长体系上线——`duration` 配置、认购窗口 `[startTime, endTime)`、硬顶恰达同笔自动结算、到期后任何人 force-end、72h 未开盘兜底 `enforceLaunchDeadline`、失败后双出口 `reclaimTokens` / `relaunchPresale`、退款作废份额防跨轮记账；此前特性保留：vestingDelay 下限 1 分钟、"领取即上线"、1e9 总量、setAllocation、softCap ≤ hardcap 校验）
+> ⚠️ **代码已前进（未部署）**：`reclaimTokens` 回收出口已移除——失败局唯一出口为 `relaunchPresale`（全员退清后重开），无代币回收通道；本文按最新代码描述，与当前链上部署（仍含 reclaimTokens）存在此一处行为差异，重新部署后消除
 > 部署验证：BscScan 源码验证 5/5 全绿 + 全场景链上冒烟测试通过（成功链路 / 硬顶自动结算 / 到期 force-end / 失败双出口 / 跨轮记账 / 72h 门禁），交易哈希见附录 A
 > ⚠️ **本节地址即当前链上部署**（97 链），合约源码均已验证；后续代码前进时再更新此处并恢复"未部署"警示
 
@@ -89,7 +90,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 ## 2. 两条业务流程
 
 > 核心心智模型：**状态迁移全部由合约在"出口动作"内代办**，用户全程不接触状态机。
-> `createToken` 后 token 所有权自动在托管仓（`launch`/`claimAllTokens`/`reclaimTokens` 的迁移编排前提）；任一出口完成后 token **必然无主（owner = 0x0）**。
+> `createToken` 后 token 所有权自动在托管仓（`launch`/`claimAllTokens` 的迁移编排前提）；任一出口完成后 token **必然无主（owner = 0x0）**。
 
 ### 2.1 流程 A：纯发币（不预售）— 共 2 笔交易
 
@@ -147,15 +148,16 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 | 72h 超时 `enforceLaunchDeadline()` | 任何人 | 状态 2 超 `LAUNCH_DEADLINE`（72h）未 `launch()` |
 | 硬顶自动结算（极端配置） | —（同笔 subscribe） | 恰达 hardcap 且 `accumulatedBNB < softCap`（正常配置 `softCap ≤ hardcap` 下不可达） |
 
-失败后**双出口**（互斥，先到先得）：
+失败后**唯一出口**（重开新一轮）：
 
 | 动作 | 调用者 | 说明 |
 |---|---|---|
 | `refund()` | 各认购者 | 精确取回本人全部缴款（按 `contributions` 账本，无截留）；**退款即作废本人代币份额**（`subscribedTokens` 清零、`accumulatedBNB` 递减），防止跨轮记账 |
-| `reclaimTokens()` | 创建者 | 回收全部代币；**同笔内嵌迁移 + renounce**（领取即上线，结局等同纯发币模式）；领取后仓空，不可再重开 |
-| `relaunchPresale()` | 创建者 | 回配置期（4→0）重开新一轮：须**全员退款完毕**（`accumulatedBNB == 0`）且仓非空；条款可重设（配置期 setter 复活）或沿用旧条款直接 `openPresale()`（重新锚定 `endTime`）；`presaleRound` +1 供事件分段 |
+| `relaunchPresale()` | 创建者 | 回配置期（4→0）重开新一轮：须**全员退款完毕**（`accumulatedBNB == 0`）；条款可重设（配置期 setter 复活）或沿用旧条款直接 `openPresale()`（重新锚定 `endTime`）；`presaleRound` +1 供事件分段 |
 
-> **前端注意**：状态 4 下 `accumulatedBNB` / `totalSubscribedTokens` 随退款递减（退款作废份额的副作用）——历史募资额请以 `PresaleFailed(raisedBNB, softCap)` 事件快照为准；重开进度的软顶对比用"当前 `accumulatedBNB` vs `softCap`"依然是正确口径。状态 4 为纯退款/回收/重开态：翻 FAILED 后**无降额开盘**（launch 通道永久关闭）。
+> **失败局无代币回收出口**（2026-09-07 起，`reclaimTokens` 已按产品决策移除）：失败局不允许创建者取回代币直接上线，托管代币随仓锁定，唯一出路是全员退清后重开。**已知边界**：若有参与者永不退款，`relaunchPresale` 将永久阻塞（`RefundsOutstanding`）、代币随仓锁死——此时创建者的最终退路是重新 `createToken` 发新币（损失仅为该次部署费用与预留的 8888 地址）；任何人的退款通道永远开放、不受影响。前端在状态 4 下应：① 对参与者突出"请退款"引导；② 对创建者展示未退款金额（`accumulatedBNB`）并将"重开预售"按钮在该值非零时置为不可用态（悬停提示"等待全部认购者退款"）。
+
+> **前端注意**：状态 4 下 `accumulatedBNB` / `totalSubscribedTokens` 随退款递减（退款作废份额的副作用）——历史募资额请以 `PresaleFailed(raisedBNB, softCap)` 事件快照为准；重开进度的软顶对比用"当前 `accumulatedBNB` vs `softCap`"依然是正确口径。状态 4 为纯退款/重开态：翻 FAILED 后**无降额开盘**（launch 通道永久关闭）。
 
 ### 2.4 地址规则：全平台尾号 8888（CREATE2 靓号）
 
@@ -269,7 +271,7 @@ struct PresaleConfig {
 | 1 | 认购中 | `subscribe`（窗口 `[startTime, endTime)`）/ `endPresale`（创建者随时；任何人过 `endTime` 后）——恰达 hardcap 的 `subscribe` 同笔自动结算离开本状态 |
 | 2 | 认购结束（达 softCap） | `launch`（72h 内）/ `enforceLaunchDeadline`（超 72h 任何人，翻 FAILED） |
 | 3 | 已开盘 | `claim` / `withdrawRemainingBNB`（未售出份额已在 `launch` 时销毁，无提取入口） |
-| 4 | 发行失败（未达 softCap 或 72h 未开盘） | `refund`（散户）/ `reclaimTokens`（创建者）/ `relaunchPresale`（创建者，须全员退款完毕，回状态 0 重开新一轮） |
+| 4 | 发行失败（未达 softCap 或 72h 未开盘） | `refund`（散户）/ `relaunchPresale`（创建者，须全员退款完毕，回状态 0 重开新一轮；无代币回收出口） |
 
 **模式判定：纯发币 vs 预售**——读 `presale.presaleEnabled()`（一次性烙印，`setupPresale` 时刻置位后终生不变，份额锁后连 owner 也改不了）：
 
@@ -281,7 +283,7 @@ struct PresaleConfig {
 | `true` | 3 | 预售：成功开盘（终态） |
 | `true` | 4 | 预售：失败（refund / reclaim / relaunch 窗口） |
 
-注意纯发币领取（`claimAllTokens`）与预售失败回收（`reclaimTokens`）的**代币终态相同**（`state ≥ 2`、owner 归零、创建者全量持仓，"领取即上线"），唯一稳定区分是 `presaleEnabled`；勿用代币分布或 `token.owner()` 推断（三种终态下均不可区分）。列表页批量判定：按 `TokenPresalePairCreated` 建 token→presale 映射后批量读 `presaleEnabled`，比事件扫描更简单。
+注意纯发币领取（`claimAllTokens`）完成后 token **必然无主**（`state ≥ 2`、owner 归零、创建者全量持仓，"领取即上线"）；预售失败局则**永远停在 BondingCurve**（无回收出口，只能重开后经 `launch` 上线）——但 `presaleEnabled` 仍是最稳定的模式判据，勿用代币分布或 `token.owner()` 推断。列表页批量判定：按 `TokenPresalePairCreated` 建 token→presale 映射后批量读 `presaleEnabled`，比事件扫描更简单。
 
 ### 4.2 代币 `token.state()`（PoolState，克隆代理上读）
 
@@ -298,7 +300,7 @@ struct PresaleConfig {
 ### 4.3 所有权时间线（新代币）
 
 ```
-createToken → 出口动作（claimAllTokens / launch / reclaimTokens）
+createToken → 出口动作（claimAllTokens / launch）
 owner=托管仓              owner=0x0（出口交易内自动 renounce）
 ```
 
@@ -320,7 +322,6 @@ owner=托管仓              owner=0x0（出口交易内自动 renounce）
 | `LaunchFinalized(uint256,uint256,uint256)` | `0x263b23d9b2cab56070be836744ca814236a9e4ea7a3843341ec410490c2940c2` | 预售开盘完成 |
 | `UnsoldTokensBurned(uint256,uint256)` | `0xced35ff772e9afd2c1a34f79c598da2231e0efa7c39d83b54e45096ac5d23bd1` | 加池时未售出预售份额销毁（`launch` 同笔交易内，紧跟 `LiquidityAdded`） |
 | `Refunded(address,uint256)` | `0xd7dee2702d63ad89917b6a4da9981c90c4d24f8c2bdfd64c604ecae57d8d0651` | 失败退款 |
-| `TokensReclaimed(address,uint256)` | `0x22a8aff78fe371f7e69a64e6fc4276227e72c6512ccee617ff32eef318f4a9f3` | 失败代币回收 |
 | `VestingClaimed(address,uint256,uint256)` | `0x4a94c2c356e29a6583071e731bdacf2ca56565ba5efebcff6936eb7923b51721` | vesting 领取 |
 | Pancake `Sync(uint112,uint112)` | `0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1` | 池储备变化 → 实时价格推送 |
 
@@ -507,7 +508,7 @@ await wallet.writeContract({
 | `0x76166401` | InvalidDuration | duration 超出 1 分钟 ~ 30 天（testnet 分支标定）；openPresale 遇 duration = 0 | 认购时长须在 1 分钟 ~ 30 天之间 |
 | `0x742e3c2b` | LaunchDeadlineNotReached | 状态 2 未满 72h 就调 enforceLaunchDeadline | 尚在开盘窗口期内 |
 | `0x0d3e2916` | RefundsOutstanding | 退款未清零就调 relaunchPresale | 须等待全部认购者退款完毕 |
-| `0x174a9bcf` | EscrowDrained | 代币已领取（仓空）后调 relaunchPresale | 代币已回收，无法重开 |
+| `0x174a9bcf` | EscrowDrained | 纵深防御（**当前不可达**）：relaunchPresale 前置的仓非空检查——回收出口移除后 FAILED 态托管仓恒非空，正常调用永不触发 | 理论防御位，见到即异常配置 |
 | `0x7a1cb75d` | SharesLocked | 首次配置后再次调 configureLaunch（含 relaunch 后的配置期） | 份额一次性写入：分配比例全生命周期仅管理员经 setupPresale 配置，创建者不可改 |
 | `0x7c946ed7` | ZeroValue | subscribe 附 0 BNB | 请输入金额 |
 | `0xc2f5625a` | AmountTooSmall | 换算代币数为 0 | 金额过小 |
@@ -521,7 +522,7 @@ await wallet.writeContract({
 | `0xff3bfcc7` | ZeroMinLiquidity | setPresaleTerms/openPresale 遇 minLiquidityAmount = 0 | 加池下限必须大于 0 |
 | `0xa4f81929` | TokensAlreadyClaimed | 重复领取/领取后再开预售 | 已领取，不可重复 |
 | `0x969bf728` | NothingToClaim | 可领额度为 0（未到周期/已领完） | 暂无可领取份额 |
-| `0x0f3f8610` | NoTokensToClaim | 托管仓余额为 0 | 无代币可领 |
+| `0x0f3f8610` | NoTokensToClaim | `claimAllTokens` 时托管仓余额为 0；`withdrawCreatorBuy` 时无注资 | 无代币/注资可领 |
 | `0x8dda39df` | NotLaunched | 未开盘就 claim | 尚未开盘 |
 | `0xa153fa9e` | NoShare | 无任何份额 | 无可领份额 |
 | `0xd7ce20a0` | MigrationStateMismatch | 迁移前置状态异常（防御性，正常流程不可达） | 状态异常，请联系平台 |
@@ -622,10 +623,10 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 ### 7.9 其他细节
 
-- `setupPresale` 是**一次性**的：条款配置后不可修改（`AlreadyConfigured`），前端提交前给确认弹窗。**重开新一轮**（`relaunchPresale`）不经过 coordinator：创建者直接调 presale 实例的配置类 setter（`setPresaleTerms` 等，此时 `onlyConfigPhase` 已复活）重设**商业条款**（价格/限额/窗口/vesting/滑点/注资），或沿用旧条款直接 `openPresale()`——`tokenConfigured` 一次性闸只约束 coordinator 路径，不受直调影响。**例外：分配份额三字段（creatorShare/poolShare/presaleShare）一次性写入后永久锁定**（`SharesLocked`）——重开沿用第一轮 `setupPresale` 写入的管理员比例，创建者任何轮次不可改；失败后转纯发币走 `reclaimTokens` 出口（`configureLaunch` 的模式开关随份额一并锁定）
+- `setupPresale` 是**一次性**的：条款配置后不可修改（`AlreadyConfigured`），前端提交前给确认弹窗。**重开新一轮**（`relaunchPresale`）不经过 coordinator：创建者直接调 presale 实例的配置类 setter（`setPresaleTerms` 等，此时 `onlyConfigPhase` 已复活）重设**商业条款**（价格/限额/窗口/vesting/滑点/注资），或沿用旧条款直接 `openPresale()`——`tokenConfigured` 一次性闸只约束 coordinator 路径，不受直调影响。**例外：分配份额三字段（creatorShare/poolShare/presaleShare）一次性写入后永久锁定**（`SharesLocked`）——重开沿用第一轮 `setupPresale` 写入的管理员比例，创建者任何轮次不可改；失败局无代币回收出口（`reclaimTokens` 已移除），唯一出路为全员退清后重开（`configureLaunch` 的模式开关随份额一并锁定）
 - `subscribe` 的硬顶/限购/售罄在**同笔交易内原子校验**，无需前端预检（但预读做按钮置灰体验更好）；恰达硬顶的那笔交易会**同笔结束预售**（事件序列 `Subscribed` → `PresaleEnded`），前端订阅 `PresaleEnded` 即可刷新状态，无需轮询
 - vesting 领取公式：`已释放 = min(份额 × vestingRate × 已过周期数 / 100, 份额)`——**累计释放封顶 100% 份额**（如 10%×11 周期只按 100% 计，不会到 110%），实际可领 = 已释放 − 已领；周期 = `(now - vestingStart) / vestingDelay`；开盘后下一个周期边界前可领为 0（正常，显示"下期释放时间"用 `getUserVestingStatus` 的 `nextVestingTime`）
-- `claim` / `refund` 对散户**免 owner 校验**（各领各的）；`claimAllTokens` / `launch` / `reclaimTokens` / `relaunchPresale` 仅创建者；`endPresale` / `enforceLaunchDeadline` 为受控公开（见 2.2/2.3 触发权表）
+- `claim` / `refund` 对散户**免 owner 校验**（各领各的）；`claimAllTokens` / `launch` / `relaunchPresale` 仅创建者；`endPresale` / `enforceLaunchDeadline` 为受控公开（见 2.2/2.3 触发权表）
 - 代币克隆实例地址即 ERC20 合约地址，`name/symbol/decimals/balanceOf/permit` 全套标准接口可用
 
 ---
@@ -810,7 +811,9 @@ try { ... } catch (e) {
 - `tokenFactory.flapImplementation == 0x835E...8ED8`、`presaleFactory.presaleImplementation == 0xfC43...3267`
 - `coordinator.routerAddress == 0xD99D...50D1`、`creationFee == 0.005 BNB`、`reservationFee == 0.01 BNB`、`factoryEnabled == true`
 
-**冒烟测试（feat/presale-duration 特性全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）：
+**冒烟测试（feat/presale-duration 特性全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）。
+
+> ⚠️ **下表为 2026-09-04 部署版本的链上冒烟记录（历史存档）**：其中场景 3 的 `reclaimTokens` 回收出口已按产品决策移除（见顶部"代码已前进"警示），当前代码失败局唯一出口为 relaunch；其余场景行为与当前代码一致。重新部署后以新冒烟为准。
 
 | # | 场景 | 关键交易 | 验证点（全部符合预期） |
 |---|---|---|---|

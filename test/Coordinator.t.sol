@@ -227,7 +227,7 @@ contract CoordinatorTest is Test {
     }
 
     /// @notice 失败发行闭环：未达软顶收官 → 散户精确退款 → 创建者回收代币
-    function test_FailedSale_RefundAndReclaimClosedLoop() public {
+    function test_FailedSale_RefundAndRelaunchClosedLoop() public {
         address tok = coordinator.getTokenPresalePairsByCreator(creator, 0, 1)[0].tokenAddress;
         address sale = coordinator.getTokenPresale(tok);
 
@@ -264,11 +264,17 @@ contract CoordinatorTest is Test {
         vm.expectRevert(NothingToClaim.selector);
         PRESALE(payable(sale)).refund();
 
-        // 创建者回收托管代币（散户从未取得过代币）
+        // 回收出口已移除：调用已删除的选择器整笔回滚，托管代币全程锁仓
         vm.prank(creator);
-        PRESALE(payable(sale)).reclaimTokens();
-        assertEq(IERC20Lite(tok).balanceOf(sale), 0);
-        assertEq(IERC20Lite(tok).balanceOf(creator), SUPPLY);
+        (bool ok,) = sale.call(abi.encodeWithSignature("reclaimTokens()"));
+        assertFalse(ok);
+        assertEq(IERC20Lite(tok).balanceOf(sale), SUPPLY);
+
+        // 唯一出口：全员退清后 relaunch 回配置期（4→0，presaleRound+1）
+        vm.prank(creator);
+        PRESALE(payable(sale)).relaunchPresale();
+        assertEq(PRESALE(payable(sale)).presaleStatus(), 0);
+        assertEq(PRESALE(payable(sale)).presaleRound(), 1);
     }
 
     // ---------------------------------------------------------------------------

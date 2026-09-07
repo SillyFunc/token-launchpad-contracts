@@ -80,13 +80,14 @@ interface ITokenMigration {
 ///       → finalizeMigration → renounceOwnership
 ///     - 失败态（STATUS_FAILED=4）：结束认购时未达 softCap（手动 endPresale / 到期 force-end /
 ///       72h 超时）宣告发行失败。散户经 refund() 精确取回缴款（退款即作废本人代币份额，
-///       accumulatedBNB 归零 = 全员退清）；创建者双出口：reclaimTokens() 回收代币（同笔内嵌迁移，
-///       结局即纯发币）或 relaunchPresale() 回配置期重开新一轮（须全员退清，两出口互斥）
+///       accumulatedBNB 归零 = 全员退清）；创建者唯一出口：relaunchPresale() 回配置期重开新一轮
+///       （须全员退清）。已知设计行为：永不退款者会令重开永久阻塞、托管代币随仓锁死——
+///       失败局不允许回收代币直接上线，创建者最终退路为重新 createToken 发新币
 ///     迁移前提：token 所有权自 createToken 起在本合约（迁移函数仅 owner 可调），各出口完成时 renounce。
 contract PRESALE is Ownable, ReentrancyGuard {
     uint256 private constant BPS_DENOMINATOR = 10000;
     uint256 private constant DEFAULT_SLIPPAGE = 500; // 5%
-    uint256 public constant STATUS_FAILED = 4; // 发行失败态：开放 refund()/reclaimTokens()/relaunchPresale()
+    uint256 public constant STATUS_FAILED = 4; // 发行失败态：开放 refund()/relaunchPresale()
     /// @notice 达软顶进状态 2 后，超过此时长未 launch()，任何人可 enforceLaunchDeadline 翻失败开放退款
     ///         （对齐 SmartDeFi LGE "结束后 72 小时未开盘参与者可开始取回资金"）
     uint256 public constant LAUNCH_DEADLINE = 72 hours;
@@ -162,7 +163,8 @@ contract PRESALE is Ownable, ReentrancyGuard {
     ///         复活的配置期）都不可再写——分配比例全生命周期仅管理员可变（第一轮经
     ///         CoordinatorFactory.setupPresale 按平台比例写入），创建者直调后门永久封死。
     ///         relaunch 后份额沿用第一轮的合法值；模式开关（presaleEnabled）与本锁同闸：
-    ///         失败后转纯发币走 reclaimTokens 出口，不经 configureLaunch
+    ///         失败局无回收出口（reclaimTokens 已移除），唯一出路 relaunch 沿用首轮份额，
+    ///         不经 configureLaunch
     bool private _sharesLocked;
 
     bool private _initialized;
@@ -196,7 +198,6 @@ contract PRESALE is Ownable, ReentrancyGuard {
     event LaunchDeadlineExceeded(uint256 raisedBNB, uint256 deadline);
     event PresaleRelaunched(uint256 round);
     event Refunded(address indexed user, uint256 amount);
-    event TokensReclaimed(address indexed owner, uint256 amount);
     event CreatorBuyFunded(address indexed funder, uint256 bnbAmount, uint256 tokenTarget);
     event CreatorBuyExecuted(uint256 bnbSpent, uint256 tokensBought);
     event CreatorBuyRefunded(address indexed to, uint256 amount);
@@ -508,7 +509,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
 
     /// @notice 完整迁移并放弃 token 所有权：BondingCurve → Migrating → TaxEnforcedAntiFarmer → renounce
     /// @dev 与 launch() 同构的迁移编排（无加池/创建者购买插入），供纯发币出口
-    ///      （claimAllTokens/reclaimTokens）复用；状态逐步严格校验，任何偏差整笔回滚（迁移不可半途）
+    ///      （claimAllTokens）复用；状态逐步严格校验，任何偏差整笔回滚（迁移不可半途）
     function _migrateAndRenounce() internal {
         ITokenMigration token = ITokenMigration(coinAddress);
 
@@ -674,7 +675,8 @@ contract PRESALE is Ownable, ReentrancyGuard {
     // ---------------------------------------------------------------------------
     // 发行失败结算（endPresale 未达 softCap / 72h 超时进入 STATUS_FAILED 后）
     // Failed 态下 subscribe/claim/launch/withdrawRemainingBNB
-    // 均被各自的状态检查天然封锁，出口为退款、代币回收与重开新一轮。
+    // 均被各自的状态检查天然封锁，出口为退款与重开新一轮（无代币回收出口：
+    // 失败局不允许创建者取回代币直接上线，见 relaunchPresale 注释）。
     // ---------------------------------------------------------------------------
 
     /// @notice 领回本人全部认购款并作废本人代币份额：按 subscribe 时记录的缴款额精确退款（无任何截留）
@@ -699,29 +701,16 @@ contract PRESALE is Ownable, ReentrancyGuard {
         emit Refunded(msg.sender, amount);
     }
 
-    /// @notice 失败结算后创建者收回托管仓内剩余代币（散户从未取得代币，全量退回即守恒）
-    /// @dev 与 claimAllTokens 同口径内嵌迁移 + renounce：失败回收不残留 BondingCurve 锁池问题
-    function reclaimTokens() external onlyOwner nonReentrant {
-        if (presaleStatus != STATUS_FAILED) revert InvalidStatus();
-        if (coinAddress == address(0)) revert TokenNotSet();
-
-        // 余额前置：空仓先以 NoTokensToClaim 拒绝（迁移前置校验不可先跑，否则二次回收报错错位）
-        uint256 balance = IERC20(coinAddress).balanceOf(address(this));
-        if (balance == 0) revert NoTokensToClaim();
-
-        _migrateAndRenounce();
-
-        TransferHelper.safeTransfer(coinAddress, msg.sender, balance);
-        emit TokensReclaimed(msg.sender, balance);
-    }
-
     /// @notice 失败态回到配置期重开新一轮预售（对齐 SmartDeFi "relaunch with new settings"）
-    /// @dev 双出口之二（与 reclaimTokens 互斥：领取后仓空即 EscrowDrained 封死重开）。
-    ///      前置 accumulatedBNB == 0：退款作废份额后该值归零 ⟺ 全员退款完毕——
-    ///      既防"吞款重开"（有人未退就重设条款），也防跨轮账本残留；永不退款者只阻塞重开，
-    ///      不阻塞退款与领取出口。回状态 0 后条款可重设（onlyConfigPhase 复活）或沿用旧条款直接
+    /// @dev 失败态唯一出口（回收出口 reclaimTokens 已按产品决策移除：失败局不允许创建者
+    ///      取回代币直接上线）。前置 accumulatedBNB == 0：退款作废份额后该值归零 ⟺ 全员退款完毕——
+    ///      既防"吞款重开"（有人未退就重设条款），也防跨轮账本残留。
+    ///      已知设计行为：永不退款者会令重开永久阻塞、托管代币随仓锁死（无回收通道），
+    ///      创建者最终退路为重新 createToken 发新币；不阻塞任何人的退款出口。
+    ///      回状态 0 后条款可重设（onlyConfigPhase 复活）或沿用旧条款直接
     ///      openPresale（重新锚定 endTime）；presaleRound+1 供前端跨轮事件分段去重。
     ///      状态 4 时 token 恒为 BondingCurve（迁移只发生在出口交易内），重开后 launch 编排不受影响。
+    ///      EscrowDrained 为纵深防御：回收出口移除后 FAILED 态托管仓恒非空，本检查不可达但保留。
     function relaunchPresale() external onlyOwner {
         if (presaleStatus != STATUS_FAILED) revert InvalidStatus();
         if (accumulatedBNB != 0) revert RefundsOutstanding();

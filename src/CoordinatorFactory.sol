@@ -191,7 +191,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         if (!transferOk) revert TokenTransferFailed();
 
         // 步骤6: 授权协调器为配置方（供 setupPresale 配置）；token 所有权交托管仓
-        //       （claimAllTokens/reclaimTokens/launch 的迁移编排前提），托管仓所有权交付创建者
+        //       （claimAllTokens/launch 的迁移编排前提），托管仓所有权交付创建者
         PRESALE(payable(presale)).setConfigurator(address(this));
         ITokenMigration(token).transferOwnership(presale);
         PRESALE(payable(presale)).transferOwnership(msg.sender);
