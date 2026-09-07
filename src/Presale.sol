@@ -55,6 +55,7 @@ error LaunchDeadlineNotReached();
 error RefundsOutstanding();
 error EscrowDrained();
 error SharesLocked();
+error InvalidMaxPresaleTokens();
 
 /// @notice 代币迁移操作接口（FlapTaxTokenV3 最小子集）
 interface ITokenMigration {
@@ -291,9 +292,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         minLiquidityAmount = _minLiquidity;
         startTime = _startTime;
         presaleDuration = _duration;
-        emit PresaleTermsSet(
-            _tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration
-        );
+        emit PresaleTermsSet(_tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration);
     }
 
     /// @notice 设置 vesting 释放节奏（vesting 恒开启；Rate 5-20%）
@@ -340,11 +339,23 @@ contract PRESALE is Ownable, ReentrancyGuard {
     function openPresale() external onlyOwner {
         if (!presaleEnabled) revert PresaleDisabled();
         if (presaleStatus != 0) revert InvalidStatus();
+        // 条款完整性终检：price/duration 缺省为 0 时开盘 = 出生即死的预售（subscribe 恒
+        // revert），配置事故须在提交时暴露而非让创建者白绕一圈失败流程
+        if (presaleTokenPrice == 0) revert InvalidPrice();
+        if (presaleDuration == 0) revert InvalidDuration();
+        // 认购上限不得超过预售份额：超募会令托管仓代币 < 应付 claim 总额，launch 后
+        // 后到认购者领不到币且状态 3 无退款通道（注定违约的配置须在源头拦截）；
+        // 0 上限同样是死配置（认购恒 PresaleSoldOut）。Coordinator 路径恒等写入不受影响
+        if (maxPresaleTokens == 0 || maxPresaleTokens > presaleShare) revert InvalidMaxPresaleTokens();
         // 终检（条款冻结前最后一道闸）：任何配置路径下 softCap < minLiquidityAmount 都不可开盘，
         // 否则 status 2 死角（launch 的 InsufficientBNB 永不可满足，而 refund 仅 FAILED 态开放）
         if (softCap < minLiquidityAmount) revert SoftCapTooLow();
         // 纵深防御：minLiquidityAmount 归零（双 0 组合绕过 SoftCapTooLow 检查）同样不可开盘
         if (minLiquidityAmount == 0) revert ZeroMinLiquidity();
+        // 倒置防御：setSoftCap(hardcap=0 时不查上限) 先于 setPresaleTerms(写 hardcap 不复查
+        // softCap) 的乱序配置可造成 softCap > hardcap——认购被硬顶封顶永远到不了成功线，
+        // 注定 FAILED 的组合不可开盘（资金虽可经 refund 退回，但白锁到 endTime）
+        if (hardcap > 0 && softCap > hardcap) revert SoftCapExceedsHardcap();
         // 锚定认购截止：以 max(当前时刻, startTime) 为起点 + duration——晚开盘不缩水窗口，
         // 提前开盘（startTime 在未来）时窗口完整落在 [startTime, startTime+duration]
         uint256 anchor = block.timestamp > startTime ? block.timestamp : startTime;
