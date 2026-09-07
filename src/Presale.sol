@@ -291,9 +291,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         minLiquidityAmount = _minLiquidity;
         startTime = _startTime;
         presaleDuration = _duration;
-        emit PresaleTermsSet(
-            _tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration
-        );
+        emit PresaleTermsSet(_tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration);
     }
 
     /// @notice 设置 vesting 释放节奏（vesting 恒开启；Rate 5-20%）
