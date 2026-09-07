@@ -177,8 +177,7 @@ contract LaunchpadTest is Test {
     /// @dev 售罄边界：认购恰好打满预售份额 → 未售出为 0，无销毁，launch 正常完成
     function test_SoldOutLaunchBurnsNothing() public {
         // maxBuyPerWallet = 1e8 ether，5 个钱包各认购满额恰好打满 presaleShare(5e8 ether)
-        address[5] memory buyers =
-            [address(0x1001), address(0x1002), address(0x1003), address(0x1004), address(0x1005)];
+        address[5] memory buyers = [address(0x1001), address(0x1002), address(0x1003), address(0x1004), address(0x1005)];
         for (uint256 i = 0; i < 5; i++) {
             vm.deal(buyers[i], 1e5 ether); // 1e8 ether 代币 × 1e15 价格 = 1e5 ether
         }
