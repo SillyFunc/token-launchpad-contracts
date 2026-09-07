@@ -98,9 +98,12 @@ contract Vanity8888Test is Test {
         bytes32 plain = keccak256("plain-reserve");
         assertTrue(uint160(tokenFactory.predictTokenAddress(plain)) & 0xFFFF != SUFFIX, "fixture must be non-vanity");
 
+        // 费用先读入局部变量：花括号表达式内的 staticcall 会吞掉 vm.expectRevert 预期
+        // （TokenReservation.t.sol 头部"套路约束 1"）
+        uint256 rFee = coordinator.reservationFee();
         vm.prank(alice);
         vm.expectRevert(InvalidVanitySuffix.selector);
-        coordinator.reserveTokenAddress{value: 0.01 ether}(plain);
+        coordinator.reserveTokenAddress{value: rFee}(plain);
     }
 
     // ---------------------------------------------------------------------------
@@ -111,11 +114,12 @@ contract Vanity8888Test is Test {
         bytes32 salt = _vanitySalt("reserved");
         address predicted = tokenFactory.predictTokenAddress(salt);
 
-        // alice 付费预留 8888 地址
+        // alice 付费预留 8888 地址（费用动态读取，费率调整不碎测试）
+        uint256 rFee = coordinator.reservationFee();
         uint256 aliceBefore = alice.balance;
         vm.prank(alice);
-        coordinator.reserveTokenAddress{value: 0.01 ether}(salt);
-        assertEq(alice.balance, aliceBefore - 0.01 ether, "reservation fee charged");
+        coordinator.reserveTokenAddress{value: rFee}(salt);
+        assertEq(alice.balance, aliceBefore - rFee, "reservation fee charged");
         assertEq(coordinator.tokenAddressReserver(predicted), alice);
 
         // 他人兑现被拒

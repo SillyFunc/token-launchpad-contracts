@@ -1,7 +1,7 @@
 # 前端对接文档 — Token Launchpad（BSC 测试网）
 
 > 合约版本：2026-09-04 部署（feat/presale-duration 分支 @ aa6429b：预售时长体系上线——`duration` 配置、认购窗口 `[startTime, endTime)`、硬顶恰达同笔自动结算、到期后任何人 force-end、72h 未开盘兜底 `enforceLaunchDeadline`、失败后双出口 `reclaimTokens` / `relaunchPresale`、退款作废份额防跨轮记账；此前特性保留：vestingDelay 下限 1 分钟、"领取即上线"、1e9 总量、setAllocation、softCap ≤ hardcap 校验）
-> ⚠️ **代码已前进（未部署）**：`reclaimTokens` 回收出口已移除——失败局唯一出口为 `relaunchPresale`（全员退清后重开），无代币回收通道；本文按最新代码描述，与当前链上部署（仍含 reclaimTokens）存在此一处行为差异，重新部署后消除
+> ⚠️ **代码已前进（未部署）**：`reclaimTokens` 回收出口已移除——失败局唯一出口为 `relaunchPresale`（全员退清后重开），无代币回收通道；预留费默认值已由 0.01 BNB 调整为 **0.001 BNB**。本文按最新代码描述，与当前链上部署（仍含 reclaimTokens、预留费 0.01 BNB）存在上述两处行为差异，重新部署后消除
 > 部署验证：BscScan 源码验证 5/5 全绿 + 全场景链上冒烟测试通过（成功链路 / 硬顶自动结算 / 到期 force-end / 失败双出口 / 跨轮记账 / 72h 门禁），交易哈希见附录 A
 > ⚠️ **本节地址即当前链上部署**（97 链），合约源码均已验证；后续代码前进时再更新此处并恢复"未部署"警示
 
@@ -55,7 +55,7 @@
 ### 1.4 平台费用（读链获取，勿硬编码）
 
 - 发币费 `coordinator.creationFee()` — 当前 **0.005 BNB**
-- 地址预留费 `coordinator.reservationFee()` — 当前 **0.01 BNB**
+- 地址预留费 `coordinator.reservationFee()` — 当前 **0.001 BNB**（代码默认值已调整；链上部署生效需重新部署，见顶部"代码已前进"警示）
 
 两处均为"多退少不补"：`msg.value > 费用` 时超额部分**同交易自动退回**（事件 `ExcessRefunded`）。
 
@@ -168,7 +168,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 ① 前端本地搜盐 → 找到尾号 8888 的 salt（平均 65536 次尝试，秒级）
 ② coordinator.createToken{value: ≥creationFee}(config, salt)   —— 未预留的盐人人免费可用
 
-防抢跑（可选，付费 0.01 BNB 不退）：
+防抢跑（可选，付费 0.001 BNB 不退，随 `reservationFee` 动态读取）：
 ① 搜盐（同上）
 ② coordinator.reserveTokenAddress{value: ≥reservationFee}(salt) —— 锁定权属（他人预留的盐会被 NotReserver 拒绝）
 ③ coordinator.createToken(config, salt)                          —— 本人兑现
@@ -809,7 +809,7 @@ try { ... } catch (e) {
 - 5 合约源码验证 5/5 `Pass - Verified`（Etherscan V2 API，chain 97）
 - 两工厂 `hasRole(COORDINATOR_ROLE, coordinator) == true`
 - `tokenFactory.flapImplementation == 0x835E...8ED8`、`presaleFactory.presaleImplementation == 0xfC43...3267`
-- `coordinator.routerAddress == 0xD99D...50D1`、`creationFee == 0.005 BNB`、`reservationFee == 0.01 BNB`、`factoryEnabled == true`
+- `coordinator.routerAddress == 0xD99D...50D1`、`creationFee == 0.005 BNB`、`reservationFee == 0.01 BNB`（旧部署口径；代码默认值已改为 0.001 BNB，重新部署后以新值为准）、`factoryEnabled == true`
 
 **冒烟测试（feat/presale-duration 特性全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）。
 
