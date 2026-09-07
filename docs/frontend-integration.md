@@ -508,7 +508,7 @@ await wallet.writeContract({
 | `0x76166401` | InvalidDuration | duration 超出 1 分钟 ~ 30 天（testnet 分支标定）；openPresale 遇 duration = 0 | 认购时长须在 1 分钟 ~ 30 天之间 |
 | `0x742e3c2b` | LaunchDeadlineNotReached | 状态 2 未满 72h 就调 enforceLaunchDeadline | 尚在开盘窗口期内 |
 | `0x0d3e2916` | RefundsOutstanding | 退款未清零就调 relaunchPresale | 须等待全部认购者退款完毕 |
-| `0x174a9bcf` | EscrowDrained | 代币已领取（仓空）后调 relaunchPresale | 代币已回收，无法重开 |
+| `0x174a9bcf` | EscrowDrained | 纵深防御（**当前不可达**）：relaunchPresale 前置的仓非空检查——回收出口移除后 FAILED 态托管仓恒非空，正常调用永不触发 | 理论防御位，见到即异常配置 |
 | `0x7a1cb75d` | SharesLocked | 首次配置后再次调 configureLaunch（含 relaunch 后的配置期） | 份额一次性写入：分配比例全生命周期仅管理员经 setupPresale 配置，创建者不可改 |
 | `0x7c946ed7` | ZeroValue | subscribe 附 0 BNB | 请输入金额 |
 | `0xc2f5625a` | AmountTooSmall | 换算代币数为 0 | 金额过小 |
@@ -522,7 +522,7 @@ await wallet.writeContract({
 | `0xff3bfcc7` | ZeroMinLiquidity | setPresaleTerms/openPresale 遇 minLiquidityAmount = 0 | 加池下限必须大于 0 |
 | `0xa4f81929` | TokensAlreadyClaimed | 重复领取/领取后再开预售 | 已领取，不可重复 |
 | `0x969bf728` | NothingToClaim | 可领额度为 0（未到周期/已领完） | 暂无可领取份额 |
-| `0x0f3f8610` | NoTokensToClaim | 托管仓余额为 0 | 无代币可领 |
+| `0x0f3f8610` | NoTokensToClaim | `claimAllTokens` 时托管仓余额为 0；`withdrawCreatorBuy` 时无注资 | 无代币/注资可领 |
 | `0x8dda39df` | NotLaunched | 未开盘就 claim | 尚未开盘 |
 | `0xa153fa9e` | NoShare | 无任何份额 | 无可领份额 |
 | `0xd7ce20a0` | MigrationStateMismatch | 迁移前置状态异常（防御性，正常流程不可达） | 状态异常，请联系平台 |
@@ -811,7 +811,9 @@ try { ... } catch (e) {
 - `tokenFactory.flapImplementation == 0x835E...8ED8`、`presaleFactory.presaleImplementation == 0xfC43...3267`
 - `coordinator.routerAddress == 0xD99D...50D1`、`creationFee == 0.005 BNB`、`reservationFee == 0.01 BNB`、`factoryEnabled == true`
 
-**冒烟测试（feat/presale-duration 特性全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）：
+**冒烟测试（feat/presale-duration 特性全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）。
+
+> ⚠️ **下表为 2026-09-04 部署版本的链上冒烟记录（历史存档）**：其中场景 3 的 `reclaimTokens` 回收出口已按产品决策移除（见顶部"代码已前进"警示），当前代码失败局唯一出口为 relaunch；其余场景行为与当前代码一致。重新部署后以新冒烟为准。
 
 | # | 场景 | 关键交易 | 验证点（全部符合预期） |
 |---|---|---|---|
