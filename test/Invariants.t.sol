@@ -188,14 +188,6 @@ contract Handler {
         p.refund(); // 仅 BNB 流，无代币流
     }
 
-    function reclaimTokens(uint256 tokenIdx) external {
-        if (tokens.length == 0) return;
-        address token = tokens[tokenIdx % tokens.length];
-        PRESALE p = PRESALE(payable(ghostPresale[token]));
-        if (p.presaleStatus() != p.STATUS_FAILED()) return;
-        _trackExit(token, p, p.owner(), 4);
-    }
-
     // ------------------------------------------------------------------
     // ghost 读取口（invariant 校验用）
     // ------------------------------------------------------------------
@@ -238,10 +230,8 @@ contract Handler {
             p.launch();
         } else if (action == 1) {
             p.claim();
-        } else if (action == 2) {
-            p.claimAllTokens(); // 纯发币模式 100% 出仓
         } else {
-            p.reclaimTokens(); // 失败终态：未售份额全量退回创建者
+            p.claimAllTokens(); // 纯发币模式 100% 出仓
         }
         ghostReleased[token] += before - IERC20Lite(token).balanceOf(address(p));
     }

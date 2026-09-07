@@ -5,7 +5,7 @@ pragma solidity ^0.8.13;
 import {Test} from "forge-std/Test.sol";
 import {FlapTaxTokenV3} from "src/lib/token/FlapTaxTokenV3.sol";
 import {IFlapTaxTokenV3} from "src/lib/interfaces/IFlapTaxTokenV3.sol";
-import {PRESALE, EscrowDrained} from "src/Presale.sol";
+import {PRESALE} from "src/Presale.sol";
 
 interface IERC20Lite {
     function transfer(address to, uint256 value) external returns (bool);
@@ -129,8 +129,9 @@ contract DummyTaxProcessor {}
 ///      本文件固化的是安全属性（而非待修 bug）：
 ///      1) DoS 持续性：投毒后任意时刻 launch 均 revert，无自愈；
 ///      2) 状态机封闭性：状态 2 卡 72h 后任何人 enforceLaunchDeadline 翻 FAILED，
-///         散户 refund 精确全额退出，创建者 reclaimTokens 全量回收代币（内嵌迁移+renounce）；
-///      3) 双出口互斥：回收后 relaunchPresale 被 EscrowDrained 封死；
+///         散户 refund 精确全额退出，回收出口已移除（reclaimTokens 选择器不存在），
+///         唯一出路为全员退清后的 relaunchPresale；
+///      3) 单出口语义：退款只动 BNB，托管代币全程锁仓无泄漏，relaunch 后回配置期；
 ///      4) 对照组：健康 pair 下同一 mock 路由 launch 成功——证明 revert 归因于投毒而非 mock 缺陷。
 contract PairPoisoningTest is Test {
     uint256 constant SUPPLY = 1e9 ether;
@@ -235,7 +236,7 @@ contract PairPoisoningTest is Test {
     }
 
     // ---------------------------------------------------------------------------
-    // 2) 救援闭环：72h 兜底 → 散户全额退款 → 创建者全量回收 → relaunch 封死
+    // 2) 救援闭环：72h 兜底 → 散户全额退款 → relaunch 回配置期（唯一出口）
     // ---------------------------------------------------------------------------
 
     function test_PoisonedPair_72hDeadlineRescue_FullExit() public {
@@ -255,15 +256,15 @@ contract PairPoisoningTest is Test {
         assertEq(presale.subscribedTokens(alice), 0, "share voided");
         assertEq(presale.accumulatedBNB(), 0, "all refunded");
 
-        // 创建者全量回收代币：同笔内嵌迁移 + renounce，结局即纯发币
-        presale.reclaimTokens();
-        assertEq(token.balanceOf(address(this)), SUPPLY, "creator made whole");
-        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.TaxEnforcedAntiFarmer), "migrated");
-        assertEq(token.owner(), address(0), "ownership renounced");
+        // 回收出口已移除：调用已删除的选择器整笔回滚，代币锁仓、未迁移
+        (bool ok,) = address(presale).call(abi.encodeWithSignature("reclaimTokens()"));
+        assertFalse(ok);
+        assertEq(token.balanceOf(address(presale)), SUPPLY, "escrow intact");
+        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.BondingCurve), "not migrated");
 
-        // 双出口互斥：仓空后重开被封死
-        vm.expectRevert(EscrowDrained.selector);
+        // 唯一出口：全员退清后 relaunch 回配置期
         presale.relaunchPresale();
+        assertEq(presale.presaleStatus(), 0, "relaunch opens round 2");
     }
 
     // ---------------------------------------------------------------------------

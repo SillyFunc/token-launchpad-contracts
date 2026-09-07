@@ -13,7 +13,6 @@ import {
     PresaleNotExpired,
     LaunchDeadlineNotReached,
     RefundsOutstanding,
-    EscrowDrained,
     HardcapReached,
     InvalidStatus,
     PresaleNotOpen,
@@ -41,7 +40,7 @@ contract MockRouter {
 
 contract DummyTaxProcessor {}
 
-/// @title 预售时长 / 到期结算 / 72h 兜底 / 失败双出口（relaunch）单元测试
+/// @title 预售时长 / 到期结算 / 72h 兜底 / 失败单出口（relaunch）单元测试
 /// @dev 覆盖面（对齐 SmartDeFi LGE 语义的改造）：
 ///      1) duration 配置边界
 ///      2) endTime 锚定（开盘晚于/早于 startTime 两种形态）
@@ -52,7 +51,7 @@ contract DummyTaxProcessor {}
 ///      7) 72h 未开盘兜底（enforceLaunchDeadline）
 ///      8) relaunchPresale 重开链路（前置校验 + 状态回 0）
 ///      9) 跨轮记账安全（退款作废份额，旧份额不泄漏进新一轮）
-///      10) 失败循环 4→0→1→4→0→1→3 全链路 + 双出口互斥
+///      10) 失败循环 4→0→1→4→0→1→3 全链路 + 回收出口移除后的单出口语义
 contract PresaleDurationTest is Test {
     uint256 constant SUPPLY = 1e9 ether;
 
@@ -283,13 +282,13 @@ contract PresaleDurationTest is Test {
         presale.enforceLaunchDeadline();
         assertEq(presale.presaleStatus(), 4);
 
-        // 退款/回收开放，launch 被状态闸封锁
+        // 退款/重开开放，launch 被状态闸封锁
         uint256 before = alice.balance;
         vm.prank(alice);
         presale.refund();
         assertEq(alice.balance, before + 0.5 ether);
-        presale.reclaimTokens();
-        assertEq(token.balanceOf(address(this)), SUPPLY);
+        presale.relaunchPresale(); // 全员退清 → 唯一出口重开成功
+        assertEq(presale.presaleStatus(), 0);
         vm.expectRevert(InvalidStatus.selector);
         presale.launch();
     }
@@ -386,25 +385,28 @@ contract PresaleDurationTest is Test {
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
     }
 
-    /// @notice 份额锁与纯发币出口的关系：失败态（状态 4）下 configureLaunch 先被 onlyConfigPhase
-    ///         状态闸拒绝（锁是 relaunch 后配置期的纵深防御）；纯发币出口走 reclaimTokens
-    ///         （领币+迁移+renounce），不依赖 configureLaunch 的模式开关
-    function test_FailedToCustodyExitViaReclaimNotConfigure() public {
+    /// @notice 份额锁与失败局出路的关系：失败态（状态 4）下 configureLaunch 先被 onlyConfigPhase
+    ///         状态闸拒绝；回收出口 reclaimTokens 已移除（调用已删除的选择器整笔回滚），
+    ///         唯一出路为 relaunchPresale（沿用首轮份额，不依赖 configureLaunch 的模式开关）
+    function test_FailedExitIsRelaunchOnly() public {
         _failAndRefundAll();
 
         // FAILED 态：配置函数被状态闸封锁（4 != 0），模式开关/份额均不可触碰
         vm.expectRevert(InvalidStatus.selector);
         presale.configureLaunch(false, address(0), 0, 0, 0);
 
-        // 纯发币出口走 reclaimTokens：全量代币 + 同笔迁移 + renounce
-        presale.reclaimTokens();
-        assertEq(token.balanceOf(address(this)), SUPPLY);
-        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.TaxEnforcedAntiFarmer));
-        assertEq(token.owner(), address(0));
+        // 回收出口已移除：调用已删除的 reclaimTokens 选择器 → 无匹配函数整笔回滚
+        (bool ok,) = address(presale).call(abi.encodeWithSignature("reclaimTokens()"));
+        assertFalse(ok);
+        assertEq(token.balanceOf(address(presale)), SUPPLY); // 代币原样锁仓，未泄漏
+
+        // 唯一出口：全员退清后 relaunch 回配置期
+        presale.relaunchPresale();
+        assertEq(presale.presaleStatus(), 0);
     }
 
-    function test_RevertWhen_RelaunchAfterReclaim() public {
-        // 失败 → 全退 → 领取代币（reclaimTokens）→ 仓空 → 重开封死（双出口互斥）
+    function test_ReclaimSelectorRevertsEvenWhenRefundsComplete() public {
+        // 失败 → 全退：旧版本此状态下 reclaimTokens 可用，现出口已彻底移除
         presale.openPresale();
         vm.prank(alice);
         presale.subscribe{value: 0.05 ether}();
@@ -412,13 +414,13 @@ contract PresaleDurationTest is Test {
         presale.endPresale();
         vm.prank(alice);
         presale.refund();
-        uint256 bnbBefore = address(presale).balance;
-        presale.reclaimTokens();
 
-        // 先退款后回收：accumulatedBNB 已归零，仅剩"仓空"判定生效
-        vm.expectRevert(EscrowDrained.selector);
+        (bool ok,) = address(presale).call(abi.encodeWithSignature("reclaimTokens()"));
+        assertFalse(ok);
+
+        // 唯一出口 relaunch 不受影响
         presale.relaunchPresale();
-        assertEq(address(presale).balance, bnbBefore);
+        assertEq(presale.presaleStatus(), 0);
     }
 
     // ---------------------------------------------------------------------------
@@ -489,19 +491,19 @@ contract PresaleDurationTest is Test {
         assertEq(token.owner(), address(0));
     }
 
-    function test_ReclaimThenRefundStillUsable() public {
-        // 既有行为保持：创建者先回收代币，散户退款不受影响（两账本独立）
+    function test_FailedStateKeepsTokensLockedWhileRefundsFlow() public {
+        // 回收出口移除后的确定性行为：失败态散户退款正常流动，托管代币全程锁仓无泄漏
         presale.openPresale();
         vm.prank(alice);
         presale.subscribe{value: 0.05 ether}();
         vm.warp(presale.endTime() + 1);
         presale.endPresale();
-        presale.reclaimTokens();
 
         uint256 before = alice.balance;
         vm.prank(alice);
         presale.refund();
         assertEq(alice.balance, before + 0.05 ether);
+        assertEq(token.balanceOf(address(presale)), SUPPLY); // 退款只动 BNB，代币分毫未出
     }
 
     // ---------------------------------------------------------------------------

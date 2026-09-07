@@ -221,10 +221,10 @@ contract PresaleSoftCapTest is Test {
     }
 
     // ---------------------------------------------------------------------------
-    // reclaimTokens：代币全额回收、仅 Failed 态
+    // reclaimTokens 出口已移除：任意状态下调用已删除的选择器均整笔回滚，代币锁仓无泄漏
     // ---------------------------------------------------------------------------
 
-    function test_ReclaimTokensFullBalanceOnceAfterFailure() public {
+    function test_ReclaimSelectorRevertsAfterFailure() public {
         address alice = address(0xA11CE);
         vm.deal(alice, 10 ether);
 
@@ -233,23 +233,18 @@ contract PresaleSoftCapTest is Test {
         vm.prank(alice);
         presale.subscribe{value: 1 ether}();
         presale.endPresale();
+        assertEq(presale.presaleStatus(), 4);
+
+        (bool ok,) = address(presale).call(abi.encodeWithSignature("reclaimTokens()"));
+        assertFalse(ok);
+        // 代币原样锁仓（回收出口已移除，失败局不再放币上线）
         assertEq(token.balanceOf(address(presale)), SUPPLY);
-
-        uint256 before = token.balanceOf(address(this));
-        presale.reclaimTokens();
-        assertEq(token.balanceOf(address(this)), before + SUPPLY);
-        assertEq(token.balanceOf(address(presale)), 0);
-        // 失败回收同口径内嵌迁移：无锁池残留、token 无主
-        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.TaxEnforcedAntiFarmer));
-        assertEq(token.owner(), address(0));
-
-        vm.expectRevert(NoTokensToClaim.selector);
-        presale.reclaimTokens();
+        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.BondingCurve));
     }
 
-    function test_ReclaimBlockedBeforeFailureState() public {
-        vm.expectRevert(InvalidStatus.selector);
-        presale.reclaimTokens(); // 配置期即拦截（并非只在事后）
+    function test_ReclaimSelectorRevertsBeforeFailureState() public {
+        (bool ok,) = address(presale).call(abi.encodeWithSignature("reclaimTokens()"));
+        assertFalse(ok); // 配置期同样无此函数
     }
 
     // ---------------------------------------------------------------------------
