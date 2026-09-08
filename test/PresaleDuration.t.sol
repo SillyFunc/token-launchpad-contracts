@@ -40,7 +40,7 @@ contract MockRouter {
 
 contract DummyTaxProcessor {}
 
-/// @title 预售时长 / 到期结算 / 72h 兜底 / 失败单出口（relaunch）单元测试
+/// @title 预售时长 / 到期结算 / 超时兜底 / 失败单出口（relaunch）单元测试
 /// @dev 覆盖面（对齐 SmartDeFi LGE 语义的改造）：
 ///      1) duration 配置边界
 ///      2) endTime 锚定（开盘晚于/早于 startTime 两种形态）
@@ -48,7 +48,7 @@ contract DummyTaxProcessor {}
 ///      4) 硬顶恰达：同笔 subscribe 自动结算 + 超顶照旧 revert
 ///      5) softCap > hardcap 顺序边界下自动结算判 FAILED
 ///      6) force-end 触发权（owner 随时 / 他人仅到期后）
-///      7) 72h 未开盘兜底（enforceLaunchDeadline）
+///      7) 超时未开盘兜底（enforceLaunchDeadline，时长引用 LAUNCH_DEADLINE 常量）
 ///      8) relaunchPresale 重开链路（前置校验 + 状态回 0）
 ///      9) 跨轮记账安全（退款作废份额，旧份额不泄漏进新一轮）
 ///      10) 失败循环 4→0→1→4→0→1→3 全链路 + 回收出口移除后的单出口语义
@@ -264,12 +264,12 @@ contract PresaleDurationTest is Test {
     }
 
     // ---------------------------------------------------------------------------
-    // 7) 72h 未开盘兜底
+    // 7) 超时未开盘兜底（LAUNCH_DEADLINE，testnet 标定 30 分钟）
     // ---------------------------------------------------------------------------
 
     function test_RevertWhen_LaunchDeadlineNotReached() public {
         _reachSoftcapAndEnd();
-        vm.warp(presale.endedAt() + 72 hours - 1);
+        vm.warp(presale.endedAt() + presale.LAUNCH_DEADLINE() - 1);
         vm.expectRevert(LaunchDeadlineNotReached.selector);
         presale.enforceLaunchDeadline();
         assertEq(presale.presaleStatus(), 2);
@@ -277,7 +277,7 @@ contract PresaleDurationTest is Test {
 
     function test_EnforceDeadlineFlipsToFailed() public {
         _reachSoftcapAndEnd();
-        vm.warp(presale.endedAt() + 72 hours + 1);
+        vm.warp(presale.endedAt() + presale.LAUNCH_DEADLINE() + 1);
         vm.prank(bob); // 任何人
         presale.enforceLaunchDeadline();
         assertEq(presale.presaleStatus(), 4);
@@ -295,20 +295,20 @@ contract PresaleDurationTest is Test {
 
     function test_LaunchWithinDeadlineStillWorks() public {
         _reachSoftcapAndEnd();
-        vm.warp(presale.endedAt() + 71 hours);
+        vm.warp(presale.endedAt() + presale.LAUNCH_DEADLINE() - 1 minutes);
         presale.launch();
         assertEq(presale.presaleStatus(), 3);
     }
 
     function test_HardcapAutoSettleThenDeadlineChain() public {
-        // 达硬顶自动进 2 → 无人 launch → 72h → 任何人翻 FAILED → 退款
+        // 达硬顶自动进 2 → 无人 launch → 超时 → 任何人翻 FAILED → 退款
         _setTerms(0.5 ether, 0.2 ether);
         presale.openPresale();
         vm.prank(alice);
         presale.subscribe{value: 0.5 ether}();
         assertEq(presale.presaleStatus(), 2);
 
-        vm.warp(presale.endedAt() + 72 hours + 1);
+        vm.warp(presale.endedAt() + presale.LAUNCH_DEADLINE() + 1);
         vm.prank(bob);
         presale.enforceLaunchDeadline();
         assertEq(presale.presaleStatus(), 4);
@@ -434,9 +434,9 @@ contract PresaleDurationTest is Test {
         presale.subscribe{value: 0.5 ether}();
         vm.warp(presale.endTime() + 1);
         presale.endPresale(); // softCap 0.1 < 0.5 → 状态 2？
-        // 注意：0.5 ≥ softCap 0.1 会判成功——改用 72h 兜底翻失败更贴近"达线后反悔"场景
+        // 注意：0.5 ≥ softCap 0.1 会判成功——改用超时兜底翻失败更贴近"达线后反悔"场景
         if (presale.presaleStatus() == 2) {
-            vm.warp(presale.endedAt() + 72 hours + 1);
+            vm.warp(presale.endedAt() + presale.LAUNCH_DEADLINE() + 1);
             presale.enforceLaunchDeadline();
         }
         vm.prank(alice);

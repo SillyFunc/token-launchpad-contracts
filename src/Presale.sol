@@ -88,11 +88,11 @@ interface IWrappedNative {
 ///     - 预售模式（presaleEnabled=true）：30% 创建者 / 20% 底池 / 50% 预售，散户 BNB 认购代币份额，
 ///       认购窗口 [startTime, endTime)（endTime = max(开盘时刻, startTime) + duration，openPresale 锚定）；
 ///       恰达 hardcap 的认购同笔结算结束，到期后任何人可 force-end（endPresale），进状态 2 后
-///       72 小时未开盘任何人可 enforceLaunchDeadline 翻失败开放退款；
+///       超过 LAUNCH_DEADLINE 未开盘任何人可 enforceLaunchDeadline 翻失败开放退款；
 ///       launch() 自动完成 startMigration → 加池(LP 死锁 0xdead) → 未售出预售份额销毁(0xdead)
 ///       → finalizeMigration → renounceOwnership
 ///     - 失败态（STATUS_FAILED=4）：结束认购时未达 softCap（手动 endPresale / 到期 force-end /
-///       72h 超时）宣告发行失败。散户经 refund() 精确取回缴款（退款即作废本人代币份额，
+///       LAUNCH_DEADLINE 超时）宣告发行失败。散户经 refund() 精确取回缴款（退款即作废本人代币份额，
 ///       accumulatedBNB 归零 = 全员退清）；创建者唯一出口：relaunchPresale() 回配置期重开新一轮
 ///       （须全员退清）。已知设计行为：永不退款者会令重开永久阻塞、托管代币随仓锁死——
 ///       失败局不允许回收代币直接上线，创建者最终退路为重新 createToken 发新币
@@ -103,7 +103,9 @@ contract PRESALE is Ownable, ReentrancyGuard {
     uint256 public constant STATUS_FAILED = 4; // 发行失败态：开放 refund()/relaunchPresale()
     /// @notice 达软顶进状态 2 后，超过此时长未 launch()，任何人可 enforceLaunchDeadline 翻失败开放退款
     ///         （对齐 SmartDeFi LGE "结束后 72 小时未开盘参与者可开始取回资金"）
-    uint256 public constant LAUNCH_DEADLINE = 72 hours;
+    /// @dev testnet 分支标定：缩短至 30 分钟以便链上冒烟真实走完 enforce 翻失败正路径
+    ///      （72h 不可操作）；主网口径须恢复 72 小时并同步前端文档
+    uint256 public constant LAUNCH_DEADLINE = 30 minutes;
     address private constant LP_LOCK_ADDRESS = address(0xdead);
 
     /// @notice 创建者购买上限：占开盘池代币份额的 5%（2 亿池 → 1000 万枚）。
@@ -139,9 +141,10 @@ contract PRESALE is Ownable, ReentrancyGuard {
     uint256 public softCap; // 认购成功线（BNB wei）：endPresale 达标进待开盘，未达进 FAILED 开放退款
 
     // === 生命周期 ===
-    // 0=创建 1=认购中 2=认购结束 3=已开盘 4=发行失败（未达 softCap 或 72h 未开盘；4→0 可经 relaunchPresale 重开）
+    // 0=创建 1=认购中 2=认购结束 3=已开盘 4=发行失败（未达 softCap 或超 LAUNCH_DEADLINE 未开盘；
+    // 4→0 可经 relaunchPresale 重开）
     uint256 public presaleStatus;
-    uint256 public endedAt; // 离开状态 1 的时刻（LAUNCH_DEADLINE 72h 计时起点）
+    uint256 public endedAt; // 离开状态 1 的时刻（LAUNCH_DEADLINE 计时起点）
     uint256 public presaleRound; // 0 = 首轮；relaunchPresale 时 +1（跨轮事件分段索引锚）
 
     // === 认购 ===
@@ -421,8 +424,8 @@ contract PRESALE is Ownable, ReentrancyGuard {
         }
     }
 
-    /// @notice 状态 2 超时兜底：达软顶进待开盘后 72 小时（LAUNCH_DEADLINE）仍未 launch，
-    ///         任何人可翻转为 FAILED 开放退款/回收（对齐 SmartDeFi "结束后 72h 未开盘参与者可取回资金"）
+    /// @notice 状态 2 超时兜底：达软顶进待开盘后超过 LAUNCH_DEADLINE 仍未 launch，
+    ///         任何人可翻转为 FAILED 开放退款/回收（对齐 SmartDeFi "结束后超时未开盘参与者可取回资金"）
     /// @dev 翻转后开盘通道永久关闭（launch 仅状态 2 可调）；FAILED 为纯退款/回收/重开态，无降额开盘
     function enforceLaunchDeadline() external {
         if (presaleStatus != 2) revert InvalidStatus();
@@ -741,7 +744,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------------------
-    // 发行失败结算（endPresale 未达 softCap / 72h 超时进入 STATUS_FAILED 后）
+    // 发行失败结算（endPresale 未达 softCap / LAUNCH_DEADLINE 超时进入 STATUS_FAILED 后）
     // Failed 态下 subscribe/claim/launch/withdrawRemainingBNB
     // 均被各自的状态检查天然封锁，出口为退款与重开新一轮（无代币回收出口：
     // 失败局不允许创建者取回代币直接上线，见 relaunchPresale 注释）。

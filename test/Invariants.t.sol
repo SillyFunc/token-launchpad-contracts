@@ -134,7 +134,7 @@ contract Handler {
         p.endPresale();
     }
 
-    /// @dev 72h 兜底：状态 2 超 LAUNCH_DEADLINE 未开盘，任何人翻 FAILED（无代币流）
+    /// @dev 超时兜底：状态 2 超 LAUNCH_DEADLINE 未开盘，任何人翻 FAILED（无代币流）
     function enforceLaunchDeadline(uint256 tokenIdx, uint256 actorSeed) external {
         if (tokens.length == 0) return;
         PRESALE p = PRESALE(payable(ghostPresale[tokens[tokenIdx % tokens.length]]));
