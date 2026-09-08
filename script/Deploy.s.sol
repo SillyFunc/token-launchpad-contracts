@@ -9,8 +9,8 @@ import {TokenFactory} from "src/TokenFactory.sol";
 import {PresaleFactory} from "src/PresaleFactory.sol";
 import {CoordinatorFactory} from "src/CoordinatorFactory.sol";
 
-// BSC 测试网
-address constant ROUTER = 0xD99D1c33F9fC3444f8101754aBC46c52416550D1;
+// PancakeSwap V2 Router — BSC mainnet.
+address constant ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
 
 contract Deploy is Script {
     function run() external {

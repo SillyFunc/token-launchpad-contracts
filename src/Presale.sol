@@ -112,7 +112,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
     ///      买入的代币是创建者开盘唯一不锁仓的持仓，上限同时约束最大"砸盘弹药"。
     uint256 public constant MAX_CREATOR_BUY_POOL_BPS = 500;
 
-    // BSC 测试网路由
+    // PancakeSwap V2 路由（由工厂在初始化时注入）
     IPancakeRouter02 router;
 
     address public coinAddress;
