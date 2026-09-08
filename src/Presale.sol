@@ -114,6 +114,22 @@ contract PRESALE is Ownable, ReentrancyGuard {
     ///      买入的代币是创建者开盘唯一不锁仓的持仓，上限同时约束最大"砸盘弹药"。
     uint256 public constant MAX_CREATOR_BUY_POOL_BPS = 500;
 
+    /// @notice 单轮预售的完整商业配置；不包含全生命周期冻结的份额/模式，也不包含 BNB 注资。
+    /// @dev 用于首轮或 relaunch 后在状态 0 原子更新条款，避免多笔 setter 留下半配置状态。
+    struct PresaleRoundConfig {
+        uint256 presaleTokenPrice;
+        uint256 maxPresaleTokens;
+        uint256 maxBuyPerWallet;
+        uint256 hardcap;
+        uint256 minLiquidityAmount;
+        uint256 softCap;
+        uint256 startTime;
+        uint256 duration;
+        uint256 vestingDelay;
+        uint256 vestingRate;
+        uint256 slippageProtection;
+    }
+
     // BSC 测试网路由
     IPancakeRouter02 router;
 
@@ -313,6 +329,45 @@ contract PRESALE is Ownable, ReentrancyGuard {
         uint256 _startTime,
         uint256 _duration
     ) external onlyOwnerOrConfigurator onlyConfigPhase {
+        _validatePresaleTerms(_tokenPrice, _maxBuyPerWallet, _minLiquidity, _duration);
+        _applyPresaleTerms(_tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration);
+    }
+
+    /// @notice 一笔交易原子覆盖当前轮次的全部商业配置。
+    /// @dev 仅配置期可用；先校验整组候选值，再统一写入。份额、模式、底层接线和创建者买入资金均不在此入口中。
+    function setPresaleConfig(PresaleRoundConfig calldata config) external onlyOwnerOrConfigurator onlyConfigPhase {
+        if (!presaleEnabled) revert PresaleDisabled();
+        if (config.maxPresaleTokens == 0 || config.maxPresaleTokens > presaleShare) {
+            revert InvalidMaxPresaleTokens();
+        }
+
+        _validatePresaleTerms(
+            config.presaleTokenPrice, config.maxBuyPerWallet, config.minLiquidityAmount, config.duration
+        );
+        _validateVestingConfig(config.vestingDelay, config.vestingRate);
+        _validateSlippageProtection(config.slippageProtection);
+        _validateSoftCap(config.softCap, config.minLiquidityAmount, config.hardcap);
+
+        _applyPresaleTerms(
+            config.presaleTokenPrice,
+            config.maxPresaleTokens,
+            config.maxBuyPerWallet,
+            config.hardcap,
+            config.minLiquidityAmount,
+            config.startTime,
+            config.duration
+        );
+        _applyVestingConfig(config.vestingDelay, config.vestingRate);
+        _applySlippageProtection(config.slippageProtection);
+        _applySoftCap(config.softCap);
+    }
+
+    function _validatePresaleTerms(
+        uint256 _tokenPrice,
+        uint256 _maxBuyPerWallet,
+        uint256 _minLiquidity,
+        uint256 _duration
+    ) internal view {
         if (presaleEnabled && _tokenPrice == 0) revert InvalidPrice();
         if (presaleEnabled && _maxBuyPerWallet == 0) revert InvalidMaxBuyPerWallet();
         // 加池下限不可归零：minLiquidityAmount=0 且 softCap=0 时 endPresale 必"达标"进状态 2，
@@ -321,6 +376,17 @@ contract PRESALE is Ownable, ReentrancyGuard {
         // @dev testnet 分支标定：Duration 下限放宽至 1 分钟（测试阶段联调）；
         //      主网口径须收紧下限并同步前端文档区间（与 vestingDelay 同款处理）
         if (_duration < 1 minutes || _duration > 30 days) revert InvalidDuration();
+    }
+
+    function _applyPresaleTerms(
+        uint256 _tokenPrice,
+        uint256 _maxTokens,
+        uint256 _maxBuyPerWallet,
+        uint256 _hardcap,
+        uint256 _minLiquidity,
+        uint256 _startTime,
+        uint256 _duration
+    ) internal {
         presaleTokenPrice = _tokenPrice;
         maxPresaleTokens = _maxTokens;
         maxBuyPerWallet = _maxBuyPerWallet;
@@ -339,15 +405,31 @@ contract PRESALE is Ownable, ReentrancyGuard {
         onlyOwnerOrConfigurator
         onlyConfigPhase
     {
+        _validateVestingConfig(_vestingDelay, _vestingRate);
+        _applyVestingConfig(_vestingDelay, _vestingRate);
+    }
+
+    function _validateVestingConfig(uint256 _vestingDelay, uint256 _vestingRate) internal pure {
         if (_vestingDelay < 1 minutes || _vestingDelay > 90 days) revert InvalidVestingDelay();
         if (_vestingRate < 5 || _vestingRate > 20) revert InvalidVestingRate();
+    }
+
+    function _applyVestingConfig(uint256 _vestingDelay, uint256 _vestingRate) internal {
         vestingDelay = _vestingDelay;
         vestingRate = _vestingRate;
         emit VestingConfigSet(_vestingDelay, _vestingRate, true);
     }
 
     function setSlippageProtection(uint256 _slippage) external onlyOwnerOrConfigurator onlyConfigPhase {
+        _validateSlippageProtection(_slippage);
+        _applySlippageProtection(_slippage);
+    }
+
+    function _validateSlippageProtection(uint256 _slippage) internal pure {
         if (_slippage > 1000) revert SlippageTooHigh();
+    }
+
+    function _applySlippageProtection(uint256 _slippage) internal {
         slippageProtection = _slippage;
     }
 
@@ -355,8 +437,16 @@ contract PRESALE is Ownable, ReentrancyGuard {
     ///         且不得超过 hardcap（hardcap > 0 时）——认购在达硬顶时被 HardcapReached 封顶，
     ///         softCap > hardcap 的组合令募资永远到不了成功线，endPresale 必判 FAILED，注定失败的配置须在源头拦截
     function setSoftCap(uint256 _softCap) external onlyOwnerOrConfigurator onlyConfigPhase {
-        if (_softCap < minLiquidityAmount) revert SoftCapTooLow();
-        if (hardcap > 0 && _softCap > hardcap) revert SoftCapExceedsHardcap();
+        _validateSoftCap(_softCap, minLiquidityAmount, hardcap);
+        _applySoftCap(_softCap);
+    }
+
+    function _validateSoftCap(uint256 _softCap, uint256 _minLiquidity, uint256 _hardcap) internal pure {
+        if (_softCap < _minLiquidity) revert SoftCapTooLow();
+        if (_hardcap > 0 && _softCap > _hardcap) revert SoftCapExceedsHardcap();
+    }
+
+    function _applySoftCap(uint256 _softCap) internal {
         softCap = _softCap;
         emit SoftCapSet(_softCap);
     }

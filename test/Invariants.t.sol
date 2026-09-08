@@ -155,6 +155,33 @@ contract Handler {
         p.relaunchPresale();
     }
 
+    /// @dev 配置期随机重写完整商业配置，覆盖 relaunch 后批量配置与后续开售/失败/上线交错路径。
+    function setPresaleConfig(uint256 tokenIdx, uint256 seed) external {
+        if (tokens.length == 0) return;
+        PRESALE p = PRESALE(payable(ghostPresale[tokens[tokenIdx % tokens.length]]));
+        if (!p.presaleEnabled() || p.presaleStatus() != 0) return;
+
+        uint256 minLiquidity = 0.05 ether + (seed % 10) * 0.01 ether;
+        uint256 candidateSoftCap = seed % 2 == 0 ? minLiquidity : 3 ether;
+        uint256 candidateHardcap = seed % 3 == 0 ? candidateSoftCap + 1 ether : 0;
+        PRESALE.PresaleRoundConfig memory config = PRESALE.PresaleRoundConfig({
+            presaleTokenPrice: 1e15 + (seed % 10) * 1e14,
+            maxPresaleTokens: p.presaleShare(),
+            maxBuyPerWallet: 1e8 ether,
+            hardcap: candidateHardcap,
+            minLiquidityAmount: minLiquidity,
+            softCap: candidateSoftCap,
+            startTime: 0,
+            duration: 1 minutes + (seed % (30 days - 1 minutes + 1)),
+            vestingDelay: 1 minutes + (seed % (90 days - 1 minutes + 1)),
+            vestingRate: 5 + (seed % 16),
+            slippageProtection: seed % 1001
+        });
+
+        vm.prank(p.owner());
+        p.setPresaleConfig(config);
+    }
+
     function launch(uint256 tokenIdx) external {
         if (tokens.length == 0) return;
         address token = tokens[tokenIdx % tokens.length];

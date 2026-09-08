@@ -3,6 +3,7 @@
 > 源码版本：**testnet 分支当前部署安全修复版**（新增配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池、`refundTo` 合约钱包退款、`LAUNCH_DEADLINE = 30 分钟`）。下列地址为本次重新部署的当前链上地址，部署产物见 `broadcast/Deploy.s.sol/97/run-latest.json`。
 > 部署验证：5 个合约已全部上链，BscScan 源码验证正在重试（验证状态以附录 A 为准）；本次仅完成部署与链上接线核验，真实链全场景冒烟测试待后续执行。
 > ⚠️ **本节地址为 BSC 测试网当前部署**（chainId 97）；主网发布前须恢复主网参数并重新部署，不能复用这些地址。
+> ⚠️ 当前开发分支新增 `setPresaleConfig` 批量配置入口；本节所列旧部署在重新部署前不支持该 ABI。
 
 ---
 
@@ -242,6 +243,36 @@ struct PresaleConfig {
 | `slippage` | ≤ 1000 | `SlippageTooHigh` |
 | `creatorBuyTokens` > 0 时 | 注资 msg.value > 0 | `CreatorBuyTokensWithoutFunding` |
 
+### 3.2.1 `PresaleRoundConfig`（重开预售批量配置）
+
+失败轮次全员退款完成并调用 `relaunchPresale()` 后，创建者可用一笔
+`setPresaleConfig(config)` 原子覆盖新一轮的全部商业参数：
+
+```solidity
+struct PresaleRoundConfig {
+    uint256 presaleTokenPrice;    // > 0
+    uint256 maxPresaleTokens;     // 1 ~ presaleShare；可小于冻结的预售份额
+    uint256 maxBuyPerWallet;      // > 0
+    uint256 hardcap;              // BNB wei；0 = 不限
+    uint256 minLiquidityAmount;   // BNB wei；> 0
+    uint256 softCap;              // minLiquidityAmount ≤ softCap ≤ hardcap（hardcap > 0 时）
+    uint256 startTime;            // 秒级时间戳；0 = 立即
+    uint256 duration;             // testnet：1 分钟 ~ 30 天
+    uint256 vestingDelay;         // testnet：1 分钟 ~ 90 天
+    uint256 vestingRate;          // 5 ~ 20
+    uint256 slippageProtection;   // 实际滑点 bps，0 ~ 1000；500 = 5%
+}
+```
+
+推荐重开流程：`relaunchPresale` → `setPresaleConfig` → `openPresale`。批量入口只在
+`presaleStatus == 0` 时开放，不修改已冻结的创建者/底池/预售份额、模式、Token/Pair/Router
+或所有权，也不接受创建者购买注资。任一字段或交叉约束非法时整笔交易回滚，旧配置保持不变。
+现有 `setPresaleTerms`、`setSoftCap`、`setVestingConfig`、`setSlippageProtection` 继续保留兼容。
+
+注意：`PresaleConfig.slippage == 0` 在首次 `setupPresale` 中表示沿用默认 5%；而批量入口的
+`slippageProtection` 是实际写入值。重开时若希望继续使用 5%，应明确传 `500`，或读取当前
+`presale.slippageProtection()` 后原样传入。
+
 **份额由管理员配置（前端动态读取，勿硬编码）**：默认 30% 创建者 / 20% 底池 / 50% 预售，平台管理员可经 `coordinator.setAllocation(creatorBps, poolBps, presaleBps)` 调整（三项均 > 0 且和 == 10000 bps，即时生效）。**比例在 `setupPresale` 时刻写入托管仓实例并冻结**——调整只影响之后创建的新币，已配置代币不受影响。前端在发币表单/详情页读 `coordinator.creatorBps()/poolBps()/presaleBps()` 获取当前比例，认购进度、定价推导（价格 = hardcap/预售份额）、破发线（= hardcap × poolBps/presaleBps）均以动态值为准；不要提供这三个比例的输入框。
 
 ### 3.3 `setupPresale` 的 msg.value 语义（创建者购买注资）
@@ -267,7 +298,7 @@ struct PresaleConfig {
 
 | 值 | 含义 | 允许的下一步 |
 |---|---|---|
-| 0 | 创建/配置期 | `setupPresale`（协调器，仅首轮）/ `claimAllTokens` / `openPresale` |
+| 0 | 创建/配置期 | `setupPresale`（协调器，仅首轮）/ `setPresaleConfig`（重开批量配置）/ `claimAllTokens` / `openPresale` |
 | 1 | 认购中 | `subscribe`（窗口 `[startTime, endTime)`）/ `endPresale`（创建者随时；任何人过 `endTime` 后）——恰达 hardcap 的 `subscribe` 同笔自动结算离开本状态 |
 | 2 | 认购结束（达 softCap） | `launch`（窗口期内）/ `enforceLaunchDeadline`（超窗任何人，翻 FAILED） |
 | 3 | 已开盘 | `claim` / `withdrawRemainingBNB`（未售出份额已在 `launch` 时销毁，无提取入口） |
@@ -501,7 +532,7 @@ await wallet.writeContract({
 |---|---|---|---|
 | `0xe87ff4be` | PresaleDisabled | 纯发币模式下调了预售函数 | 该代币未开启预售 |
 | `0xee64016a` | PresaleEnabled | 预售模式下调用 `claimAllTokens` | 已开启预售，不能领取全部托管代币 |
-| `0x00bfc921` | InvalidPrice | 预售价为 0（setPresaleTerms / openPresale 终检） | 价格非法 |
+| `0x00bfc921` | InvalidPrice | 预售价为 0（setPresaleTerms / setPresaleConfig / openPresale 终检） | 价格非法 |
 | `0x755f0ed3` | InvalidVestingDelay | vestingDelay 超出 1 分钟 ~ 90 天（testnet 分支标定） | 领取周期须在 1 分钟 ~ 90 天之间 |
 | `0x416c61ed` | InvalidVestingRate | vestingRate 超出 5 ~ 20 | 每期释放比例须在 5%~20% |
 | `0xf525e320` | InvalidStatus | 状态不对（各类状态守卫兜底） | 当前状态不可执行该操作 |
@@ -521,10 +552,10 @@ await wallet.writeContract({
 | `0x5be90159` | HardcapReached | 超募资硬顶 | 已达硬顶 |
 | `0xbf64110f` | InsufficientBNB | launch 时募资 < minLiquidity | 流动性门槛未达 |
 | `0xe4b16145` | SoftCapTooLow | softCap < minLiquidity | 软顶须不小于加池下限 |
-| `0xc0e1152e` | SoftCapExceedsHardcap | softCap > hardcap（hardcap > 0 时；setSoftCap / openPresale 终检） | 软顶不可超过硬顶 |
-| `0x5668bc6c` | InvalidMaxPresaleTokens | openPresale 遇 maxPresaleTokens = 0 或 > presaleShare | 认购上限须为 1 ~ 预售份额 |
-| `0x1a16b58e` | InvalidMaxBuyPerWallet | setPresaleTerms/openPresale 遇 maxBuyPerWallet = 0 | 单钱包上限必须大于 0 |
-| `0xff3bfcc7` | ZeroMinLiquidity | setPresaleTerms/openPresale 遇 minLiquidityAmount = 0 | 加池下限必须大于 0 |
+| `0xc0e1152e` | SoftCapExceedsHardcap | softCap > hardcap（hardcap > 0 时；setSoftCap / setPresaleConfig / openPresale 终检） | 软顶不可超过硬顶 |
+| `0x5668bc6c` | InvalidMaxPresaleTokens | setPresaleConfig/openPresale 遇 maxPresaleTokens = 0 或 > presaleShare | 认购上限须为 1 ~ 预售份额 |
+| `0x1a16b58e` | InvalidMaxBuyPerWallet | setPresaleTerms/setPresaleConfig/openPresale 遇 maxBuyPerWallet = 0 | 单钱包上限必须大于 0 |
+| `0xff3bfcc7` | ZeroMinLiquidity | setPresaleTerms/setPresaleConfig/openPresale 遇 minLiquidityAmount = 0 | 加池下限必须大于 0 |
 | `0x535f6940` | ZeroAllocationShare | 创建者/底池/预售任一份额为 0 | 分配比例非法 |
 | `0x6d501ff8` | AllocationMismatch | 三类份额之和不等于托管仓实际代币余额 | 托管资产与应付份额不守恒 |
 | `0x4211fd84` | NotConfigurator | 非锁定的 Coordinator 调用份额或模式配置 | 无配置权限 |
@@ -610,7 +641,7 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 ### 7.9 其他细节
 
-- `setupPresale` 是**一次性**的：条款配置后不可修改（`AlreadyConfigured`），前端提交前给确认弹窗。PresaleFactory 在移交 owner 前一次性锁定 Coordinator；只有它能执行 `configureLaunch` / `setCustodyMode`，创建者无法抢先写份额或切换模式。**重开新一轮**（`relaunchPresale`）不经过 coordinator：创建者直接调 presale 实例的商业配置 setter（`setPresaleTerms` 等，此时 `onlyConfigPhase` 已复活）重设价格/限额/窗口/vesting/滑点/注资，或沿用旧条款直接 `openPresale()`。分配份额与模式终生不变，`openPresale` 还会复核三类份额之和等于实际托管余额。
+- `setupPresale` 是**一次性**的：条款配置后不可修改（`AlreadyConfigured`），前端提交前给确认弹窗。PresaleFactory 在移交 owner 前一次性锁定 Coordinator；只有它能执行 `configureLaunch` / `setCustodyMode`，创建者无法抢先写份额或切换模式。**重开新一轮**（`relaunchPresale`）不经过 coordinator：创建者优先调用 `setPresaleConfig` 一笔原子重设价格/限额/窗口/vesting/滑点；旧商业 setter 仍可兼容使用，也可沿用旧条款直接 `openPresale()`。创建者买入注资继续由 `fundCreatorBuy` 独立处理。分配份额与模式终生不变，`openPresale` 还会复核三类份额之和等于实际托管余额。
 - `subscribe` 的硬顶/限购/售罄在**同笔交易内原子校验**，无需前端预检（但预读做按钮置灰体验更好）；恰达硬顶的那笔交易会**同笔结束预售**（事件序列 `Subscribed` → `PresaleEnded`），前端订阅 `PresaleEnded` 即可刷新状态，无需轮询
 - vesting 领取公式：`已释放 = min(份额 × vestingRate × 已过周期数 / 100, 份额)`——**累计释放封顶 100% 份额**（如 10%×11 周期只按 100% 计，不会到 110%），实际可领 = 已释放 − 已领；周期 = `(now - vestingStart) / vestingDelay`；开盘后下一个周期边界前可领为 0（正常，显示"下期释放时间"用 `getUserVestingStatus` 的 `nextVestingTime`）
 - `claim` / `refund` / `refundTo` 对散户**免 owner 校验**（各领各的；`refundTo` 仅能处置调用者自己的退款账本）；`claimAllTokens` / `launch` / `relaunchPresale` 仅创建者；`endPresale` / `enforceLaunchDeadline` 为受控公开（见 2.2/2.3 触发权表）
@@ -697,6 +728,7 @@ const coordinatorAbi = parseAbi([
 ]);
 const presaleAbi = parseAbi([
   "function claimAllTokens()", "function subscribe() payable",
+  "function setPresaleConfig((uint256 presaleTokenPrice, uint256 maxPresaleTokens, uint256 maxBuyPerWallet, uint256 hardcap, uint256 minLiquidityAmount, uint256 softCap, uint256 startTime, uint256 duration, uint256 vestingDelay, uint256 vestingRate, uint256 slippageProtection) config)",
   "function lpAddress() view returns (address)",
   "function presaleTokenPrice() view returns (uint256)",
   "function presaleEnabled() view returns (bool)",

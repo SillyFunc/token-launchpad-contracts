@@ -17,7 +17,10 @@ import {
     InvalidStatus,
     PresaleNotOpen,
     NotLaunched,
-    SharesLocked
+    SharesLocked,
+    SoftCapExceedsHardcap,
+    InvalidMaxPresaleTokens,
+    NotOwnerOrConfigurator
 } from "src/Presale.sol";
 
 contract MockRouter {
@@ -352,6 +355,93 @@ contract PresaleDurationTest is Test {
     }
 
     // ---------------------------------------------------------------------------
+    // 8.1) 重开批量配置：一笔交易原子覆盖全部商业条款
+    // ---------------------------------------------------------------------------
+
+    function test_RelaunchBatchConfigUpdatesAllCommercialTerms() public {
+        _failAndRefundAll();
+        presale.relaunchPresale();
+
+        PRESALE.PresaleRoundConfig memory config = _roundConfig();
+        presale.setPresaleConfig(config);
+
+        assertEq(presale.presaleTokenPrice(), config.presaleTokenPrice);
+        assertEq(presale.maxPresaleTokens(), config.maxPresaleTokens);
+        assertEq(presale.maxBuyPerWallet(), config.maxBuyPerWallet);
+        assertEq(presale.hardcap(), config.hardcap);
+        assertEq(presale.minLiquidityAmount(), config.minLiquidityAmount);
+        assertEq(presale.startTime(), config.startTime);
+        assertEq(presale.presaleDuration(), config.duration);
+        assertEq(presale.vestingDelay(), config.vestingDelay);
+        assertEq(presale.vestingRate(), config.vestingRate);
+        assertEq(presale.slippageProtection(), config.slippageProtection);
+        assertEq(presale.softCap(), config.softCap);
+
+        // 批量入口不得触碰平台冻结的份额、模式或底层接线。
+        assertTrue(presale.presaleEnabled());
+        assertEq(presale.creatorShare(), creatorShare);
+        assertEq(presale.poolShare(), poolShare);
+        assertEq(presale.presaleShare(), presaleShare);
+        assertEq(presale.coinAddress(), address(token));
+        assertEq(presale.lpAddress(), pair);
+
+        presale.openPresale();
+        assertEq(presale.presaleStatus(), 1);
+        assertEq(presale.endTime(), config.startTime + config.duration);
+    }
+
+    function test_RevertWhen_BatchConfigUnauthorized() public {
+        _failAndRefundAll();
+        presale.relaunchPresale();
+
+        vm.prank(alice);
+        vm.expectRevert(NotOwnerOrConfigurator.selector);
+        presale.setPresaleConfig(_roundConfig());
+    }
+
+    function test_RevertWhen_BatchConfigOutsideConfigPhase() public {
+        presale.openPresale();
+
+        vm.expectRevert(InvalidStatus.selector);
+        presale.setPresaleConfig(_roundConfig());
+    }
+
+    function test_RevertWhen_BatchConfigExceedsFrozenPresaleShare() public {
+        _failAndRefundAll();
+        presale.relaunchPresale();
+        PRESALE.PresaleRoundConfig memory config = _roundConfig();
+        config.maxPresaleTokens = presaleShare + 1;
+
+        vm.expectRevert(InvalidMaxPresaleTokens.selector);
+        presale.setPresaleConfig(config);
+    }
+
+    function test_InvalidBatchConfigRollsBackEveryField() public {
+        _failAndRefundAll();
+        presale.relaunchPresale();
+        PRESALE.PresaleRoundConfig memory config = _roundConfig();
+        config.hardcap = 0.4 ether;
+        config.softCap = 0.5 ether;
+
+        vm.expectRevert(SoftCapExceedsHardcap.selector);
+        presale.setPresaleConfig(config);
+
+        // 即使错误发生在跨字段校验，交易也不得留下任何半配置状态。
+        assertEq(presale.presaleTokenPrice(), PRICE);
+        assertEq(presale.maxPresaleTokens(), presaleShare);
+        assertEq(presale.maxBuyPerWallet(), 1e8 ether);
+        assertEq(presale.hardcap(), 0);
+        assertEq(presale.minLiquidityAmount(), 0.1 ether);
+        assertEq(presale.startTime(), 0);
+        assertEq(presale.presaleDuration(), DURATION);
+        assertEq(presale.vestingDelay(), 7 days);
+        assertEq(presale.vestingRate(), 10);
+        assertEq(presale.slippageProtection(), 500);
+        assertEq(presale.softCap(), 0.1 ether);
+        assertEq(presale.presaleStatus(), 0);
+    }
+
+    // ---------------------------------------------------------------------------
     // 8.5) 份额治理：一次性写入锁（创建者任何轮次不可改，管理员比例全生命周期生效）
     // ---------------------------------------------------------------------------
 
@@ -512,6 +602,22 @@ contract PresaleDurationTest is Test {
 
     event PresaleEnded();
     event PresaleRelaunched(uint256 round);
+
+    function _roundConfig() internal view returns (PRESALE.PresaleRoundConfig memory) {
+        return PRESALE.PresaleRoundConfig({
+            presaleTokenPrice: 2e15,
+            maxPresaleTokens: presaleShare - 1 ether,
+            maxBuyPerWallet: 5e7 ether,
+            hardcap: 3 ether,
+            minLiquidityAmount: 0.2 ether,
+            softCap: 0.5 ether,
+            startTime: block.timestamp + 1 days,
+            duration: 7 days,
+            vestingDelay: 14 days,
+            vestingRate: 20,
+            slippageProtection: 250
+        });
+    }
 
     /// @dev 重设条款（配置期专用）：hardcap/softCap 组合
     function _setTerms(uint256 hardcap_, uint256 softCap_) internal {
