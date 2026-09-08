@@ -106,11 +106,11 @@ contract PRESALE is Ownable, ReentrancyGuard {
     uint256 public constant LAUNCH_DEADLINE = 72 hours;
     address private constant LP_LOCK_ADDRESS = address(0xdead);
 
-    /// @notice 创建者购买上限：占开盘池代币份额的 25%（2 亿池 → 5000 万枚）。
-    /// @dev 买满上限的最坏边界：开盘价 ×1.78 以内、池深留存 75%、创建者即时筹码 5% 供应量、
-    ///      需等额于募集额 1/3 的 BNB；正常防抢跑使用（5-10% 池）远碰不到上限。
+    /// @notice 创建者购买上限：占开盘池代币份额的 5%（2 亿池 → 1000 万枚）。
+    /// @dev 买满上限的最坏边界：开盘价 ×1.11 以内、池深留存 95%、创建者即时筹码 1% 供应量、
+    ///      需等额于募集额 1/19 的 BNB；限制开盘价格冲击与创建者即时筹码。
     ///      买入的代币是创建者开盘唯一不锁仓的持仓，上限同时约束最大"砸盘弹药"。
-    uint256 public constant MAX_CREATOR_BUY_POOL_BPS = 2500;
+    uint256 public constant MAX_CREATOR_BUY_POOL_BPS = 500;
 
     // BSC 测试网路由
     IPancakeRouter02 router;
@@ -597,7 +597,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
 
     /// @notice 创建者购买注资（更新语义：写入新值后退回旧注资）
     /// @param tokenTarget 期望买入代币数（wei）；0 = quote 模式（花掉注资随行就市买入）
-    /// @dev 仅未开盘（status != 3）可注资；token 模式上限 = poolShare × 25%（2 亿池 → 5000 万枚）。
+    /// @dev 仅未开盘（status != 3）可注资；token 模式上限 = poolShare × 5%（2 亿池 → 1000 万枚）。
     ///      旧注资退 owner()：setupPresale 一次性调用保证 Coordinator 路径无旧款，
     ///      owner 直接追加注资时 msg.sender == owner()，两路径落点一致。
     function fundCreatorBuy(uint256 tokenTarget) external payable onlyOwnerOrConfigurator nonReentrant {
@@ -660,7 +660,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
             }
         } else {
             // quote 模式：随行就市花掉 spend；上限 = 池 BNB × bps/(10000-bps)，
-            // 恒定乘积下恰为买走 25% 池代币的花费，与 token 模式共用同一物理上界
+            // 恒定乘积下恰为买走 5% 池代币的花费，与 token 模式共用同一物理上界
             uint256 maxSpend = (poolBnb * MAX_CREATOR_BUY_POOL_BPS) / (BPS_DENOMINATOR - MAX_CREATOR_BUY_POOL_BPS);
             uint256 spend = bnb > maxSpend ? maxSpend : bnb;
             // amountOutMin=0：同 tx 原子执行、池子流动性本交易刚建立、无夹击窗口

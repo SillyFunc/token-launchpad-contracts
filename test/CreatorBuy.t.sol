@@ -25,7 +25,7 @@ import {MockRouterWithFactory, MockPairFactory, IERC20Lite, VanitySaltFinder} fr
 contract CreatorBuyTest is Test {
     uint256 constant SUPPLY = 1e9 ether;
     uint256 constant POOL_SHARE = SUPPLY * 20 / 100; // 20% 底池份额 = 2 亿枚
-    uint256 constant MAX_BUY = POOL_SHARE * 25 / 100; // poolShare × 25% = 5000 万枚上限
+    uint256 constant MAX_BUY = POOL_SHARE * 5 / 100; // poolShare × 5% = 1000 万枚上限
 
     // 结构性镜像合约事件，供 vm.expectEmit 按 topic 匹配
     event LaunchFinalized(uint256 bnbAmount, uint256 tokenAmount, uint256 timestamp);
@@ -98,14 +98,17 @@ contract CreatorBuyTest is Test {
     function test_QuoteModeFullFlow() public {
         uint256 bnbBefore = creator.balance;
         _runToPreLaunch(0.1 ether, 0, 0.5 ether);
+        uint256 poolBnb = 1 ether;
+        uint256 maxSpend = (poolBnb * 500) / 9500;
+        uint256 expectedTokens = (maxSpend * router.swapRate()) / 1e18;
 
         vm.expectEmit(false, false, false, true, address(sale));
-        emit CreatorBuyExecuted(0.1 ether, 2e4 ether);
+        emit CreatorBuyExecuted(maxSpend, expectedTokens);
         _launch();
 
-        // 免税窗口买入：0.1 BNB × 20万/BNB 汇率 = 2 万枚，精确到账即证明无税
-        assertEq(IERC20Lite(tokenAddr).balanceOf(creator), 2e4 ether);
-        assertEq(creator.balance, bnbBefore - 0.1 ether, "spent exactly the funding");
+        // 注资超过 5% 池代币的报价上限：只花池 BNB 的 1/19，余款退回；精确到账即证明免税。
+        assertEq(IERC20Lite(tokenAddr).balanceOf(creator), expectedTokens);
+        assertEq(creator.balance, bnbBefore - maxSpend, "spend capped at 5% pool-token limit");
         assertEq(sale.creatorBuyBnb(), 0);
 
         // 即时到账：开盘后立即可转账（不进 vesting）
@@ -136,17 +139,17 @@ contract CreatorBuyTest is Test {
         uint256 bnbBefore = creator.balance;
         _runToLaunch(1 ether, 0, 0.5 ether);
 
-        // 上限 = 池 BNB × 2500/7500 = 1/3 BNB；超出部分退回
+        // 上限 = 池 BNB × 500/9500 = 1/19 BNB；超出部分退回
         uint256 poolBnb = 1 ether; // alice 认购额即加池 BNB
-        uint256 maxSpend = (poolBnb * 2500) / 7500;
+        uint256 maxSpend = (poolBnb * 500) / 9500;
         uint256 expectedTokens = (maxSpend * router.swapRate()) / 1e18;
         assertEq(IERC20Lite(tokenAddr).balanceOf(creator), expectedTokens);
-        assertEq(creator.balance, bnbBefore - maxSpend, "spend capped at poolBnb/3");
+        assertEq(creator.balance, bnbBefore - maxSpend, "spend capped at poolBnb/19");
         assertEq(sale.creatorBuyBnb(), 0);
     }
 
     function test_RevertWhen_TargetExceedsCap() public {
-        PresaleConfig memory cfg = _cfgWith(MAX_BUY + 1, 0.5 ether); // 5 万 + 1 wei
+        PresaleConfig memory cfg = _cfgWith(MAX_BUY + 1, 0.5 ether); // 1000 万 + 1 wei
         uint256 val = 1 ether;
         vm.prank(creator);
         vm.expectRevert(CreatorBuyTooLarge.selector);

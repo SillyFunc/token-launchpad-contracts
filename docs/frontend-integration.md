@@ -224,7 +224,7 @@ struct PresaleConfig {
     uint256 vestingRate;          // 每周期释放百分比：5 ≤ x ≤ 20
     uint256 slippage;             // 加池滑点保护 bps，0 ≤ x ≤ 1000（0 = 用默认 5%）
     uint256 creatorBuyTokens;     // 创建者购买目标（代币 wei）；0 = quote 模式（随行就市买入，花费有上限，
-                                  //   见 3.3）；上限 = 底池份额 × 25%
+                                  //   见 3.3）；上限 = 底池份额 × 5%
 }
 ```
 
@@ -247,7 +247,7 @@ struct PresaleConfig {
 ### 3.3 `setupPresale` 的 msg.value 语义（创建者购买注资）
 
 - `msg.value == 0`：不注资，`launch` 行为与无购买完全一致
-- `msg.value > 0` 且 `creatorBuyTokens == 0`（quote 模式）：launch 时随行就市买入，**花费上限 = 开盘池 BNB 的 1/3**（`MAX_CREATOR_BUY_POOL_BPS = 2500`，恒定乘积下恰为买走 25% 池代币的花费）——注资超出上限的部分、以及 swap 失败的全额，都会同交易退回创建者
+- `msg.value > 0` 且 `creatorBuyTokens == 0`（quote 模式）：launch 时随行就市买入，**花费上限 = 开盘池 BNB 的 1/19**（`MAX_CREATOR_BUY_POOL_BPS = 500`，恒定乘积下恰为买走 5% 池代币的花费）——注资超出上限的部分、以及 swap 失败的全额，都会同交易退回创建者
 - `msg.value > 0` 且 `creatorBuyTokens > 0`（token 模式）：精确买入目标数量，实际花费按池价计算，超额同交易退回
 - 误注资可撤回：`presale.withdrawCreatorBuy()`（开盘前任意状态可用）
 
