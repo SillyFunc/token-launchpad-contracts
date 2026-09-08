@@ -10,7 +10,8 @@ import {
     ZeroCreatorBuyValue,
     CreatorBuyLocked,
     NothingToClaim,
-    InvalidStatus
+    InvalidStatus,
+    NotOwnerOrConfigurator
 } from "src/Presale.sol";
 import {CoordinatorFactory, CreatorBuyTokensWithoutFunding} from "src/CoordinatorFactory.sol";
 import {TokenFactory, TokenConfig} from "src/TokenFactory.sol";
@@ -285,7 +286,7 @@ contract CreatorBuyTest is Test {
         vm.deal(attacker, 1 ether);
         uint256 val = 0.1 ether;
         vm.prank(attacker);
-        vm.expectRevert(InvalidStatus.selector); // onlyOwnerOrConfigurator
+        vm.expectRevert(NotOwnerOrConfigurator.selector);
         sale.fundCreatorBuy{value: val}(0);
 
         vm.prank(attacker);

@@ -13,7 +13,10 @@ import {
     SoftCapExceedsHardcap,
     InvalidPrice,
     InvalidDuration,
-    AlreadyInitialized
+    AlreadyInitialized,
+    InvalidMaxBuyPerWallet,
+    ConfiguratorAlreadySet,
+    ZeroAllocationShare
 } from "src/Presale.sol";
 
 contract MockRouter {
@@ -55,6 +58,8 @@ contract PresaleOpenGuardsTest is Test {
     uint256 constant DURATION = 30 days;
 
     uint256 private _cloneNonce;
+
+    event PresaleCreated(address indexed presale, address indexed creator);
 
     function setUp() public {
         router = new MockRouter();
@@ -110,6 +115,11 @@ contract PresaleOpenGuardsTest is Test {
         presale.setPresaleTerms(PRICE, 0, 1e8 ether, 0, 0.1 ether, 0, DURATION);
         vm.expectRevert(InvalidMaxPresaleTokens.selector);
         presale.openPresale();
+    }
+
+    function test_RevertWhen_SetTermsWithZeroWalletLimit() public {
+        vm.expectRevert(InvalidMaxBuyPerWallet.selector);
+        presale.setPresaleTerms(PRICE, presaleShare, 0, 0, 0.1 ether, 0, DURATION);
     }
 
     /// @dev 修复链路：错误配置被拒后改正即可开盘，状态无残留
@@ -178,6 +188,14 @@ contract PresaleOpenGuardsTest is Test {
         p.openPresale();
     }
 
+    function test_RevertWhen_AllocationContainsZeroShare() public {
+        PRESALE p = new PRESALE();
+        p.initialize(address(this), address(router));
+
+        vm.expectRevert(ZeroAllocationShare.selector);
+        p.configureLaunch(true, address(this), creatorShare, 0, presaleShare + poolShare);
+    }
+
     /// @dev 白盒注入 duration=0（公开 setter 恒 ≥ 1 分钟，构造唯一残留路径）：拒开
     function test_RevertWhen_OpenWithZeroDuration() public {
         stdstore.target(address(presale)).sig(presale.presaleDuration.selector).checked_write(uint256(0));
@@ -207,19 +225,32 @@ contract PresaleOpenGuardsTest is Test {
         PRESALE template = new PRESALE();
         PresaleFactory factory = new PresaleFactory(address(template), address(this));
 
-        address clone1 = factory.createPresale(address(router));
-        address clone2 = factory.createPresale(address(router));
+        address clone1 = factory.createPresale(address(router), address(this));
+        address clone2 = factory.createPresale(address(router), address(this));
         assertTrue(clone1 != clone2);
 
         // 克隆已初始化（owner = 调用方，工厂末尾移交），再初始化必拒
         assertEq(PRESALE(payable(clone1)).owner(), address(this));
         assertEq(PRESALE(payable(clone2)).owner(), address(this));
+        assertEq(PRESALE(payable(clone1)).configurator(), address(this));
+        vm.expectRevert(ConfiguratorAlreadySet.selector);
+        PRESALE(payable(clone1)).setConfigurator(address(0xBEEF));
         vm.expectRevert(AlreadyInitialized.selector);
         PRESALE(payable(clone1)).initialize(address(this), address(router));
 
         // 模板锁依旧有效
         vm.expectRevert(AlreadyInitialized.selector);
         template.initialize(address(this), address(router));
+    }
+
+    function test_PresaleCreatedEventUsesActualCreator() public {
+        PRESALE template = new PRESALE();
+        PresaleFactory factory = new PresaleFactory(address(template), address(this));
+        address creator = address(0xC1);
+
+        vm.expectEmit(false, true, false, false, address(factory));
+        emit PresaleCreated(address(0), creator);
+        factory.createPresale(address(router), creator);
     }
 
     // ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ contract MockV2Pair {
     address public immutable token1; // WBNB
     uint112 private reserve0;
     uint112 private reserve1;
+    uint256 public totalSupply;
 
     constructor(address _wbnb) {
         token1 = _wbnb;
@@ -53,6 +54,16 @@ contract MockV2Pair {
 
     /// @notice 与 PancakeV2Pair.sync() 同义：reserves := 实际持仓（无权限限制）
     function sync() external {
+        reserve0 = uint112(IERC20Lite(token0).balanceOf(address(this)));
+        reserve1 = uint112(IERC20Lite(token1).balanceOf(address(this)));
+    }
+
+    function mint(address) external returns (uint256 liquidity) {
+        uint256 amount0 = IERC20Lite(token0).balanceOf(address(this)) - reserve0;
+        uint256 amount1 = IERC20Lite(token1).balanceOf(address(this)) - reserve1;
+        require(amount0 > 0 && amount1 > 0, "mock: insufficient mint amounts");
+        liquidity = 1e18;
+        totalSupply = liquidity;
         reserve0 = uint112(IERC20Lite(token0).balanceOf(address(this)));
         reserve1 = uint112(IERC20Lite(token1).balanceOf(address(this)));
     }
@@ -120,25 +131,17 @@ contract MockV2Router {
 
 contract DummyTaxProcessor {}
 
-/// @title Pair 预投毒 griefing PoC：launch DoS 是可退出的，不是资金锁死
-/// @dev 攻击面（V2 launchpad 通用类风险，非本分支引入）：
+/// @title Pair 预投毒 griefing 回归：单边储备不得阻断 launch
+/// @dev 历史攻击面：
 ///      createToken 即 createPair（储备 (0,0)）。任何人可向 pair 直捐 WBNB + sync()，
 ///      令储备变为 (token=0, bnb>0)；此后 launch() 的 addLiquidityETH 在报价分支除零
 ///      Panic(0x12) 恒 revert。攻击者需真实付出捐出的 WBNB（无资金被窃，纯 griefing）。
 ///
-///      本文件固化的是安全属性（而非待修 bug）：
-///      1) DoS 持续性：投毒后任意时刻 launch 均 revert，无自愈；
-///      2) 状态机封闭性：状态 2 卡 72h 后任何人 enforceLaunchDeadline 翻 FAILED，
-///         散户 refund 精确全额退出，回收出口已移除（reclaimTokens 选择器不存在），
-///         唯一出路为全员退清后的 relaunchPresale；
-///      3) 单出口语义：退款只动 BNB，托管代币全程锁仓无泄漏，relaunch 后回配置期；
-///      4) 对照组：健康 pair 下同一 mock 路由 launch 成功——证明 revert 归因于投毒而非 mock 缺陷。
+///      修复后首次加池直接向 canonical pair 注入两侧资产并 mint，不经过 Router 的 reserve quote，
+///      因此已同步的单边 WBNB 储备只会成为对 LP 的额外捐赠，不再造成除零 DoS。
 contract PairPoisoningTest is Test {
     uint256 constant SUPPLY = 1e9 ether;
     uint256 constant POISON = 0.5 ether;
-
-    // Panic(0x12)（除零）的编码：selector("Panic(uint256)") ++ abi.encode(0x12)
-    bytes constant DIV_BY_ZERO = bytes.concat(hex"4e487b71", bytes32(uint256(0x12)));
 
     MockWBNB wbnb;
     MockV2Pair pair;
@@ -212,60 +215,29 @@ contract PairPoisoningTest is Test {
     }
 
     // ---------------------------------------------------------------------------
-    // 1) 投毒：launch 恒 revert（Panic 0x12），无自愈，状态与代币态不变
+    // 1) 投毒：launch 仍成功，募集 BNB 与预定代币数量完整进入池中
     // ---------------------------------------------------------------------------
 
-    function test_PoisonedPair_BlocksLaunch_Persistently() public {
+    function test_PoisonedPair_DoesNotBlockLaunch() public {
         _poisonPair();
 
         (uint112 r0, uint112 r1,) = pair.getReserves();
         assertEq(uint256(r0), 0, "poisoned: token reserve = 0");
         assertEq(uint256(r1), POISON, "poisoned: bnb reserve = donated");
 
-        vm.expectRevert(DIV_BY_ZERO);
         presale.launch();
 
-        // 无自愈：任意等待后依旧（本次 revert 未改变任何状态）
-        vm.warp(block.timestamp + 1 days);
-        vm.expectRevert(DIV_BY_ZERO);
-        presale.launch();
-
-        assertEq(presale.presaleStatus(), 2, "status untouched by failed launch");
-        assertEq(presale.accumulatedBNB(), 0.1 ether, "raise intact");
-        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.BondingCurve), "migration rolled back");
+        assertEq(presale.presaleStatus(), 3, "launched");
+        assertEq(presale.accumulatedBNB(), 0, "raise consumed");
+        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.TaxEnforcedAntiFarmer));
+        (r0, r1,) = pair.getReserves();
+        assertEq(uint256(r0), poolShare, "token reserve = pool share");
+        assertEq(uint256(r1), POISON + 0.1 ether, "donation plus full raise");
     }
 
     // ---------------------------------------------------------------------------
-    // 2) 救援闭环：72h 兜底 → 散户全额退款 → relaunch 回配置期（唯一出口）
+    // 2) 既有 72h 失败退款闭环继续由其他状态机测试覆盖
     // ---------------------------------------------------------------------------
-
-    function test_PoisonedPair_72hDeadlineRescue_FullExit() public {
-        _poisonPair();
-
-        // 状态 2 卡满 72h：任何人（这里让攻击者本人执行，证明无需许可）翻 FAILED
-        vm.warp(presale.endedAt() + presale.LAUNCH_DEADLINE() + 1);
-        vm.prank(bob);
-        presale.enforceLaunchDeadline();
-        assertEq(presale.presaleStatus(), presale.STATUS_FAILED());
-
-        // 散户精确全额退款（缴款账本口径，非合约余额）
-        uint256 aliceBefore = alice.balance;
-        vm.prank(alice);
-        presale.refund();
-        assertEq(alice.balance, aliceBefore + 0.1 ether, "contributor made whole");
-        assertEq(presale.subscribedTokens(alice), 0, "share voided");
-        assertEq(presale.accumulatedBNB(), 0, "all refunded");
-
-        // 回收出口已移除：调用已删除的选择器整笔回滚，代币锁仓、未迁移
-        (bool ok,) = address(presale).call(abi.encodeWithSignature("reclaimTokens()"));
-        assertFalse(ok);
-        assertEq(token.balanceOf(address(presale)), SUPPLY, "escrow intact");
-        assertEq(uint8(token.state()), uint8(IFlapTaxTokenV3.PoolState.BondingCurve), "not migrated");
-
-        // 唯一出口：全员退清后 relaunch 回配置期
-        presale.relaunchPresale();
-        assertEq(presale.presaleStatus(), 0, "relaunch opens round 2");
-    }
 
     // ---------------------------------------------------------------------------
     // 夹具

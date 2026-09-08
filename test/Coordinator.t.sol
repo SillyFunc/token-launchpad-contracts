@@ -21,6 +21,10 @@ import {VanitySaltFinder} from "./TokenReservation.t.sol";
 contract MockPairFactory {
     address public pair;
 
+    function getPair(address, address) external view returns (address) {
+        return pair;
+    }
+
     function createPair(address, address) external returns (address) {
         return pair;
     }

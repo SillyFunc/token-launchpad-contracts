@@ -59,8 +59,18 @@ library VanitySaltFinder {
 
 contract MockPairFactory {
     address public pair;
+    uint256 public createPairCalls;
+
+    function setPair(address _pair) external {
+        pair = _pair;
+    }
+
+    function getPair(address, address) external view returns (address) {
+        return pair;
+    }
 
     function createPair(address, address) external returns (address) {
+        createPairCalls += 1;
         return pair;
     }
 }
@@ -158,6 +168,8 @@ contract TokenReservationTest is Test {
     uint256 constant SUPPLY = 1e9 ether;
     // 地址尾号 = 低 16 bit；0x8888 即尾号 8888（全平台强制，见 VANITY_SUFFIX 校验）
     uint160 constant VANITY_SUFFIX = 0x8888;
+
+    event TokenCreated(address indexed token, address indexed creator, address pair);
     bytes32 constant RESERVE_TOPIC = keccak256("TokenAddressReserved(address,address,uint256)");
 
     MockRouterWithFactory router;
@@ -272,6 +284,24 @@ contract TokenReservationTest is Test {
         assertEq(evtToken, predicted);
         assertTrue(coordinator.tokenExists(predicted));
         assertEq(IERC20Lite(predicted).balanceOf(coordinator.getTokenPresale(predicted)), SUPPLY);
+    }
+
+    function test_TokenFactoryReusesPrecreatedCanonicalPair() public {
+        MockPairFactory precreatedFactory = new MockPairFactory();
+        address existingPair = address(0xBEEF);
+        precreatedFactory.setPair(existingPair);
+        MockRouterWithFactory precreatedRouter = new MockRouterWithFactory(address(0xAABB), precreatedFactory);
+        FlapTaxTokenV3 implementation = new FlapTaxTokenV3(5e6 ether, 1e7 ether);
+        TokenFactory factory = new TokenFactory(address(implementation), address(precreatedRouter), address(this));
+
+        address actualCreator = address(0xC1);
+        vm.expectEmit(false, true, false, false, address(factory));
+        emit TokenCreated(address(0), actualCreator, address(0));
+        TokenFactory.TokenBundle memory bundle =
+            factory.createToken(_tokenConfig(), keccak256("precreated-pair"), actualCreator);
+
+        assertEq(bundle.pair, existingPair);
+        assertEq(precreatedFactory.createPairCalls(), 0, "must not call createPair when canonical pair exists");
     }
 
     function test_RevertWhen_ZeroSalt() public {

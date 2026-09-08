@@ -13,7 +13,8 @@ import {
     InvalidStatus,
     PresaleNotOpen,
     NotLaunched,
-    NotAfterLaunch
+    NotAfterLaunch,
+    InvalidRefundRecipient
 } from "src/Presale.sol";
 
 contract MockRouter {
@@ -58,6 +59,24 @@ contract GreedyReceiver {
         (bool ok, bytes memory ret) = target.call(data);
         require(ok, "exec failed");
         return ret;
+    }
+}
+
+contract RejectingRefundReceiver {
+    function subscribe(PRESALE p) external payable {
+        p.subscribe{value: msg.value}();
+    }
+
+    function refund(PRESALE p) external {
+        p.refund();
+    }
+
+    function refundTo(PRESALE p, address payable recipient) external {
+        p.refundTo(recipient);
+    }
+
+    receive() external payable {
+        revert("reject BNB");
     }
 }
 
@@ -218,6 +237,43 @@ contract PresaleSoftCapTest is Test {
         presale.refund();
         // bob 记账不受影响
         assertEq(presale.contributions(bob), 0.3 ether);
+    }
+
+    function test_RejectingContractCanRefundToAlternateRecipient() public {
+        RejectingRefundReceiver rejecting = new RejectingRefundReceiver();
+        address payable recipient = payable(address(0xCAFE));
+        vm.deal(address(rejecting), 1 ether);
+
+        presale.setSoftCap(2 ether);
+        presale.openPresale();
+        rejecting.subscribe{value: 1 ether}(presale);
+        presale.endPresale();
+
+        vm.expectRevert();
+        rejecting.refund(presale);
+        assertEq(presale.contributions(address(rejecting)), 1 ether, "failed transfer must roll back accounting");
+
+        uint256 before = recipient.balance;
+        rejecting.refundTo(presale, recipient);
+        assertEq(recipient.balance, before + 1 ether);
+        assertEq(presale.contributions(address(rejecting)), 0);
+        assertEq(presale.subscribedTokens(address(rejecting)), 0);
+    }
+
+    function test_RevertWhen_RefundRecipientIsZero() public {
+        address alice = address(0xA11CE);
+        vm.deal(alice, 1 ether);
+
+        presale.setSoftCap(2 ether);
+        presale.openPresale();
+        vm.prank(alice);
+        presale.subscribe{value: 1 ether}();
+        presale.endPresale();
+
+        vm.prank(alice);
+        vm.expectRevert(InvalidRefundRecipient.selector);
+        presale.refundTo(payable(address(0)));
+        assertEq(presale.contributions(alice), 1 ether);
     }
 
     // ---------------------------------------------------------------------------

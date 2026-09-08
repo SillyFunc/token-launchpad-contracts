@@ -51,17 +51,18 @@ contract PresaleFactory is AccessControl {
     ///      预售各项配置（份额/价格/vesting）由 CoordinatorFactory.setupPresale 完成。
     ///      份额写入锁（_sharesLocked）首次 setup 时置位：纯托管初始化绕开 configureLaunch
     ///      直接置位 presaleEnabled=false，避免工厂的一次性初始化消费掉唯一写入名额
-    function createPresale(address _router) external onlyRole(COORDINATOR_ROLE) returns (address) {
+    function createPresale(address _router, address _creator) external onlyRole(COORDINATOR_ROLE) returns (address) {
         address presaleAddress = Clones.clone(presaleImplementation);
         PRESALE presale = PRESALE(payable(presaleAddress));
 
         presale.initialize(address(this), _router); // owner = 工厂（配置期间），末尾移交
         presale.setCustodyMode(); // 纯托管模式（份额三字段保持 0，不动写入锁）
+        presale.setConfigurator(msg.sender); // 在 owner 移交前一次性锁定为 Coordinator
 
         // 配置完成，所有权移交上层（Coordinator），由其再转给创建者
         presale.transferOwnership(msg.sender);
 
-        emit PresaleCreated(presaleAddress, msg.sender);
+        emit PresaleCreated(presaleAddress, _creator);
         return presaleAddress;
     }
 }

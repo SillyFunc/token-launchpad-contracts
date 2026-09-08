@@ -5,7 +5,7 @@ pragma solidity ^0.8.13;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
+import {IPancakePair, IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
 import {IFlapTaxTokenV3} from "src/lib/interfaces/IFlapTaxTokenV3.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
 
@@ -16,7 +16,8 @@ import {TransferHelper} from "src/TransferHelper.sol";
 error AlreadyInitialized();
 error PresaleDisabled();
 error InvalidCreator();
-error EmptyAllocation();
+error ZeroAllocationShare();
+error AllocationMismatch();
 error InvalidPrice();
 error InvalidVestingDelay();
 error InvalidVestingRate();
@@ -56,6 +57,14 @@ error RefundsOutstanding();
 error EscrowDrained();
 error SharesLocked();
 error InvalidMaxPresaleTokens();
+error InvalidMaxBuyPerWallet();
+error InvalidConfigurator();
+error ConfiguratorAlreadySet();
+error NotConfigurator();
+error NotOwnerOrConfigurator();
+error InvalidRefundRecipient();
+error PresaleEnabled();
+error PairAlreadyInitialized();
 
 /// @notice 代币迁移操作接口（FlapTaxTokenV3 最小子集）
 interface ITokenMigration {
@@ -65,6 +74,10 @@ interface ITokenMigration {
     function renounceOwnership() external;
     function transferOwnership(address newOwner) external;
     function owner() external view returns (address);
+}
+
+interface IWrappedNative {
+    function deposit() external payable;
 }
 
 /// @title PRESALE — Launchpad 分配/认购/锁仓/加池/迁移编排合约
@@ -198,6 +211,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
     event LaunchDeadlineExceeded(uint256 raisedBNB, uint256 deadline);
     event PresaleRelaunched(uint256 round);
     event Refunded(address indexed user, uint256 amount);
+    event RefundedTo(address indexed user, address indexed recipient, uint256 amount);
     event CreatorBuyFunded(address indexed funder, uint256 bnbAmount, uint256 tokenTarget);
     event CreatorBuyExecuted(uint256 bnbSpent, uint256 tokensBought);
     event CreatorBuyRefunded(address indexed to, uint256 amount);
@@ -224,12 +238,26 @@ contract PRESALE is Ownable, ReentrancyGuard {
     }
 
     modifier onlyOwnerOrConfigurator() {
-        if (msg.sender != owner() && msg.sender != configurator) revert InvalidStatus();
+        if (msg.sender != owner() && msg.sender != configurator) revert NotOwnerOrConfigurator();
+        _;
+    }
+
+    /// @dev 工厂实例在所有权交给创建者前已写入 configurator，因此创建者不能抢配。
+    ///      configurator 为零时允许初始 owner，保留独立部署 PRESALE 的测试/集成能力。
+    modifier onlyConfigurator() {
+        address currentConfigurator = configurator;
+        if (currentConfigurator == address(0)) {
+            if (msg.sender != owner()) revert NotConfigurator();
+        } else if (msg.sender != currentConfigurator) {
+            revert NotConfigurator();
+        }
         _;
     }
 
     /// @notice 设置配置期授权方（仅 owner，配置期内）
     function setConfigurator(address _configurator) external onlyOwner onlyConfigPhase {
+        if (_configurator == address(0)) revert InvalidConfigurator();
+        if (configurator != address(0)) revert ConfiguratorAlreadySet();
         configurator = _configurator;
         emit ConfiguratorSet(_configurator);
     }
@@ -244,18 +272,21 @@ contract PRESALE is Ownable, ReentrancyGuard {
         uint256 _creatorShare,
         uint256 _poolShare,
         uint256 _presaleShare
-    ) external onlyOwnerOrConfigurator onlyConfigPhase {
+    ) external onlyConfigurator onlyConfigPhase {
         if (tokensClaimed) revert TokensAlreadyClaimed(); // 抽干托管仓后禁止重开预售，封死“领完全量代币再设局募资”骗局
         if (_sharesLocked) revert SharesLocked(); // 份额一次性写入：首轮 setup 后永久锁定（relaunch 不复活）
         if (_presaleEnabled) {
             if (_creator == address(0)) revert InvalidCreator();
-            if (_creatorShare + _poolShare + _presaleShare == 0) revert EmptyAllocation();
+            if (_creatorShare == 0 || _poolShare == 0 || _presaleShare == 0) revert ZeroAllocationShare();
             creator = _creator;
         }
         presaleEnabled = _presaleEnabled;
         creatorShare = _creatorShare;
         poolShare = _poolShare;
         presaleShare = _presaleShare;
+        // Coordinator 路径已先完成全量入仓，因此在写入时即可验证；独立部署若尚未
+        // setCoinAndPair，则由 openPresale 的终检执行同一守恒校验。
+        if (_presaleEnabled && coinAddress != address(0)) _validateAllocation();
         _sharesLocked = true;
         emit PresaleConfigured(_presaleEnabled, _creator, _creatorShare, _poolShare, _presaleShare);
     }
@@ -264,8 +295,9 @@ contract PRESALE is Ownable, ReentrancyGuard {
     ///         不写份额、不消耗一次性写入锁——真正的份额写入名额留给 setupPresale
     /// @dev 与 configureLaunch(false,...) 的差异：后者会置位 _sharesLocked，令后续
     ///      setupPresale 的合法份额写入被 SharesLocked 误拒（工厂初始化 ≠ 配置）
-    function setCustodyMode() external onlyOwnerOrConfigurator onlyConfigPhase {
+    function setCustodyMode() external onlyConfigurator onlyConfigPhase {
         if (tokensClaimed) revert TokensAlreadyClaimed();
+        if (_sharesLocked) revert SharesLocked();
         presaleEnabled = false;
     }
 
@@ -279,6 +311,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         uint256 _duration
     ) external onlyOwnerOrConfigurator onlyConfigPhase {
         if (presaleEnabled && _tokenPrice == 0) revert InvalidPrice();
+        if (presaleEnabled && _maxBuyPerWallet == 0) revert InvalidMaxBuyPerWallet();
         // 加池下限不可归零：minLiquidityAmount=0 且 softCap=0 时 endPresale 必"达标"进状态 2，
         // 而 launch 加池 0 BNB 恒 revert、状态 2 无退款通道（softCap ≥ minLiquidity 下 0 值即死角）
         if (_minLiquidity == 0) revert ZeroMinLiquidity();
@@ -343,6 +376,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         // revert），配置事故须在提交时暴露而非让创建者白绕一圈失败流程
         if (presaleTokenPrice == 0) revert InvalidPrice();
         if (presaleDuration == 0) revert InvalidDuration();
+        if (maxBuyPerWallet == 0) revert InvalidMaxBuyPerWallet();
         // 认购上限不得超过预售份额：超募会令托管仓代币 < 应付 claim 总额，launch 后
         // 后到认购者领不到币且状态 3 无退款通道（注定违约的配置须在源头拦截）；
         // 0 上限同样是死配置（认购恒 PresaleSoldOut）。Coordinator 路径恒等写入不受影响
@@ -356,6 +390,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         // softCap) 的乱序配置可造成 softCap > hardcap——认购被硬顶封顶永远到不了成功线，
         // 注定 FAILED 的组合不可开盘（资金虽可经 refund 退回，但白锁到 endTime）
         if (hardcap > 0 && softCap > hardcap) revert SoftCapExceedsHardcap();
+        _validateAllocation();
         // 锚定认购截止：以 max(当前时刻, startTime) 为起点 + duration——晚开盘不缩水窗口，
         // 提前开盘（startTime 在未来）时窗口完整落在 [startTime, startTime+duration]
         uint256 anchor = block.timestamp > startTime ? block.timestamp : startTime;
@@ -486,6 +521,24 @@ contract PRESALE is Ownable, ReentrancyGuard {
     function _addLiquidity(uint256 tokenAmount, uint256 bnbAmount) internal {
         if (liquidityAdded) revert LiquidityAlreadyAdded();
 
+        // 标准 V2 pair 在首次 mint 前 totalSupply 为 0。若第三方预先捐入资产并 sync，
+        // 直接向 pair 注入两侧资产再 mint，不依赖 Router 对单边 reserves 的 quote，避免除零。
+        // 未被投毒的空池仍走标准 Router，保留既有滑点保护；无 pair ABI 的测试路由也走兼容分支。
+        (bool pairDetected, bytes memory totalSupplyData) =
+            lpAddress.staticcall(abi.encodeCall(IPancakePair.totalSupply, ()));
+        if (pairDetected && totalSupplyData.length >= 32) {
+            if (abi.decode(totalSupplyData, (uint256)) != 0) revert PairAlreadyInitialized();
+            (bool reservesRead, bytes memory reservesData) =
+                lpAddress.staticcall(abi.encodeCall(IPancakePair.getReserves, ()));
+            if (reservesRead && reservesData.length >= 96) {
+                (uint112 reserve0, uint112 reserve1,) = abi.decode(reservesData, (uint112, uint112, uint32));
+                if (reserve0 != 0 || reserve1 != 0) {
+                    _mintInitialLiquidityDirect(tokenAmount, bnbAmount);
+                    return;
+                }
+            }
+        }
+
         uint256 tokenMin = (tokenAmount * (BPS_DENOMINATOR - slippageProtection)) / BPS_DENOMINATOR;
         uint256 bnbMin = (bnbAmount * (BPS_DENOMINATOR - slippageProtection)) / BPS_DENOMINATOR;
 
@@ -505,6 +558,21 @@ contract PRESALE is Ownable, ReentrancyGuard {
         accumulatedBNB = 0;
 
         emit LiquidityAdded(amountToken, amountETH, liquidity, LP_LOCK_ADDRESS);
+    }
+
+    function _mintInitialLiquidityDirect(uint256 tokenAmount, uint256 bnbAmount) internal {
+        address wrappedNative = router.WETH();
+
+        TransferHelper.safeTransfer(coinAddress, lpAddress, tokenAmount);
+        IWrappedNative(wrappedNative).deposit{value: bnbAmount}();
+        TransferHelper.safeTransfer(wrappedNative, lpAddress, bnbAmount);
+        uint256 liquidity = IPancakePair(lpAddress).mint(LP_LOCK_ADDRESS);
+
+        liquidityAdded = true;
+        totalLPTokens = liquidity;
+        accumulatedBNB = 0;
+
+        emit LiquidityAdded(tokenAmount, bnbAmount, liquidity, LP_LOCK_ADDRESS);
     }
 
     /// @notice 完整迁移并放弃 token 所有权：BondingCurve → Migrating → TaxEnforcedAntiFarmer → renounce
@@ -648,7 +716,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
     /// @dev 领取即上线：迁移终点 TaxEnforcedAntiFarmer（买卖税按发币配置即时生效）、token owner 归零。
     ///      此后创建者可自由分发，或随时去 Pancake 以标准流程（approve + addLiquidityETH）加池交易。
     function claimAllTokens() external onlyOwner nonReentrant {
-        if (presaleEnabled) revert PresaleDisabled();
+        if (presaleEnabled) revert PresaleEnabled();
         if (tokensClaimed) revert TokensAlreadyClaimed();
         if (coinAddress == address(0)) revert TokenNotSet();
 
@@ -686,19 +754,31 @@ contract PRESALE is Ownable, ReentrancyGuard {
     ///      accumulatedBNB 随退款递减，归零 = 全员退款完毕 = relaunchPresale 的重开前置判据。
     ///      （FAILED 态下视图随退款递减属预期；历史募资额以 PresaleFailed(raisedBNB) 事件为准）
     function refund() external nonReentrant {
+        _refund(msg.sender, payable(msg.sender));
+    }
+
+    /// @notice 退款到指定地址，供拒收原生 BNB 的合约钱包安全退出。
+    /// @dev 账本仍严格归属于 msg.sender；recipient 只决定本次退款的接收地址。
+    function refundTo(address payable recipient) external nonReentrant {
+        if (recipient == address(0)) revert InvalidRefundRecipient();
+        _refund(msg.sender, recipient);
+    }
+
+    function _refund(address user, address payable recipient) internal {
         if (presaleStatus != STATUS_FAILED) revert InvalidStatus();
 
-        uint256 amount = contributions[msg.sender];
+        uint256 amount = contributions[user];
         if (amount == 0) revert NothingToClaim();
-        uint256 tokens = subscribedTokens[msg.sender];
+        uint256 tokens = subscribedTokens[user];
 
-        contributions[msg.sender] = 0;
-        subscribedTokens[msg.sender] = 0;
+        contributions[user] = 0;
+        subscribedTokens[user] = 0;
         accumulatedBNB -= amount;
         totalSubscribedTokens -= tokens;
 
-        TransferHelper.safeTransferETH(msg.sender, amount);
-        emit Refunded(msg.sender, amount);
+        TransferHelper.safeTransferETH(recipient, amount);
+        emit Refunded(user, amount);
+        if (recipient != user) emit RefundedTo(user, recipient, amount);
     }
 
     /// @notice 失败态回到配置期重开新一轮预售（对齐 SmartDeFi "relaunch with new settings"）
@@ -747,6 +827,14 @@ contract PRESALE is Ownable, ReentrancyGuard {
         uint256 vested = _vestedOf(share);
         uint256 claimed = claimedTokens[user];
         return vested > claimed ? vested - claimed : 0;
+    }
+
+    function _validateAllocation() internal view {
+        if (creatorShare == 0 || poolShare == 0 || presaleShare == 0) revert ZeroAllocationShare();
+        if (coinAddress == address(0)) revert TokenNotSet();
+        if (creatorShare + poolShare + presaleShare != IERC20(coinAddress).balanceOf(address(this))) {
+            revert AllocationMismatch();
+        }
     }
 
     function getUserVestingStatus(address user)

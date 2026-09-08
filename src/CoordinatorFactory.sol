@@ -147,7 +147,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         if (uint160(predicted) & 0xFFFF != VANITY_SUFFIX) revert InvalidVanitySuffix();
         address reserver = tokenAddressReserver[predicted];
         if (reserver != address(0) && reserver != msg.sender) revert NotReserver();
-        TokenFactory.TokenBundle memory bundle = tokenFactory.createToken(tokenConfig, salt);
+        TokenFactory.TokenBundle memory bundle = tokenFactory.createToken(tokenConfig, salt, msg.sender);
         token = bundle.token;
         if (token == address(0)) revert TokenCreationFailed();
 
@@ -181,7 +181,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
             );
 
         // 步骤5: 创建托管仓（PRESALE 克隆，未配置预售）
-        presale = presaleFactory.createPresale(routerAddress);
+        presale = presaleFactory.createPresale(routerAddress, msg.sender);
         PRESALE(payable(presale)).setCoinAndPair(token, bundle.pair);
 
         // 步骤5: 全量代币转入托管仓
@@ -192,7 +192,6 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
 
         // 步骤6: 授权协调器为配置方（供 setupPresale 配置）；token 所有权交托管仓
         //       （claimAllTokens/launch 的迁移编排前提），托管仓所有权交付创建者
-        PRESALE(payable(presale)).setConfigurator(address(this));
         ITokenMigration(token).transferOwnership(presale);
         PRESALE(payable(presale)).transferOwnership(msg.sender);
         emit OwnershipTransferred(token, presale, msg.sender);
@@ -244,6 +243,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         // 加池下限前置校验（与 PRESALE.setPresaleTerms 同源规则）：双 0 组合的 status 2 死角
         // 在编排层即拦截，错误归属更清晰（发币表单事故在提交时报错，而非开盘阶段才暴露）
         if (presaleConfig.minLiquidityAmount == 0) revert ZeroMinLiquidity();
+        if (presaleConfig.maxBuyPerWallet == 0) revert InvalidMaxBuyPerWallet();
         // token 模式漏传资金 = 前端事故：显式报错，杜绝"以为买了、实际静默没买"
         if (presaleConfig.creatorBuyTokens > 0 && msg.value == 0) revert CreatorBuyTokensWithoutFunding();
 
@@ -277,9 +277,6 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         if (presaleConfig.slippage > 0) {
             p.setSlippageProtection(presaleConfig.slippage);
         }
-        // 每钱包认购上限必须为正：0 会导致 subscribe() 恒 revert，整单报废
-        if (presaleConfig.maxBuyPerWallet == 0) revert InvalidMaxBuyPerWallet();
-
         // 创建者购买注资（置于全部 setter 之后，保证 poolShare 已设置供上限校验）
         if (msg.value > 0) {
             p.fundCreatorBuy{value: msg.value}(presaleConfig.creatorBuyTokens);

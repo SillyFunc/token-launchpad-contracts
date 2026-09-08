@@ -9,9 +9,11 @@ import {
     PRESALE,
     PresaleNotOpen,
     PresaleDisabled,
-    TokensAlreadyClaimed,
     SoftCapTooLow,
-    ZeroMinLiquidity
+    ZeroMinLiquidity,
+    NotConfigurator,
+    AllocationMismatch,
+    PresaleEnabled
 } from "src/Presale.sol";
 import {FlapTaxTokenV3} from "src/lib/token/FlapTaxTokenV3.sol";
 import {PresaleFactory} from "src/PresaleFactory.sol";
@@ -80,7 +82,7 @@ contract PresaleSecurityTest is Test {
         assertEq(IERC20Lite(token).balanceOf(address(presale)), 0, "escrow drained");
 
         vm.prank(creator);
-        vm.expectRevert(TokensAlreadyClaimed.selector);
+        vm.expectRevert(NotConfigurator.selector);
         presale.configureLaunch(true, creator, 3e8 ether, 2e8 ether, 5e8 ether);
 
         // 闸口封锁后下游全链路不可达：开盘/认购均拒绝，受害者无从入场
@@ -91,6 +93,58 @@ contract PresaleSecurityTest is Test {
         vm.expectRevert(PresaleNotOpen.selector);
         presale.subscribe{value: 1 ether}();
         assertEq(address(presale).balance, 0, "no funds can enter");
+    }
+
+    /// 创建者持有 PRESALE ownership 也不能抢在 Coordinator 前写入并锁死份额。
+    function test_RevertWhen_CreatorFrontRunsAllocationConfiguration() public {
+        vm.prank(creator);
+        vm.expectRevert(NotConfigurator.selector);
+        presale.configureLaunch(true, creator, 8e8 ether, 1e8 ether, 1e8 ether);
+
+        assertEq(presale.creatorShare(), 0);
+        assertEq(presale.poolShare(), 0);
+        assertEq(presale.presaleShare(), 0);
+    }
+
+    function test_RevertWhen_ConfiguratorWritesAllocationAboveEscrow() public {
+        vm.prank(address(coordinator));
+        vm.expectRevert(AllocationMismatch.selector);
+        presale.configureLaunch(true, creator, 8e8 ether, 2e8 ether, 5e8 ether);
+    }
+
+    /// setup 后模式与份额同生命周期冻结，owner 不得切回纯托管模式取走全部代币。
+    function test_RevertWhen_CreatorDisablesPresaleAfterSetup() public {
+        vm.prank(creator);
+        coordinator.setupPresale(token, _presaleConfig());
+
+        vm.prank(creator);
+        vm.expectRevert(NotConfigurator.selector);
+        presale.setCustodyMode();
+
+        assertTrue(presale.presaleEnabled());
+        assertEq(IERC20Lite(token).balanceOf(address(presale)), SUPPLY);
+    }
+
+    function test_RevertWithCorrectErrorWhenClaimAllCalledForPresale() public {
+        vm.prank(creator);
+        coordinator.setupPresale(token, _presaleConfig());
+
+        vm.prank(creator);
+        vm.expectRevert(PresaleEnabled.selector);
+        presale.claimAllTokens();
+    }
+
+    /// 即使配置存储被错误写入，开售终检也必须确保三类债务与实际托管余额完全守恒。
+    function test_RevertWhen_AllocationExceedsEscrowBalance() public {
+        vm.prank(creator);
+        coordinator.setupPresale(token, _presaleConfig());
+
+        uint256 creatorShareSlot = _stdstore.target(address(presale)).sig("creatorShare()").find();
+        vm.store(address(presale), bytes32(creatorShareSlot), bytes32(uint256(8e8 ether)));
+
+        vm.prank(creator);
+        vm.expectRevert(AllocationMismatch.selector);
+        presale.openPresale();
     }
 
     /// 回归 2：setPresaleTerms 抬高 minLiquidityAmount 破坏 softCap 不变量后，openPresale 必须被拒

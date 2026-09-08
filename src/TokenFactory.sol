@@ -15,6 +15,7 @@ error SellFeeTooHigh();
 error InvalidFeeRecipient();
 error InvalidTaxDuration();
 error InvalidAntiFarmerDuration();
+error InvalidCreator();
 
 // ============================================================================
 // TokenFactory - 克隆 FlapTaxTokenV3 模板 + 创建 Pair
@@ -56,11 +57,11 @@ contract TokenFactory is AccessControl {
         routerAddress = _router;
     }
 
-    /// @dev 部署克隆 → 创建 V2 交易对。TaxProcessor 由 Coordinator 部署并初始化（其部署者为调用链协调器）。
+    /// @dev 部署克隆 → 创建/复用 V2 交易对。TaxProcessor 由 Coordinator 部署并初始化（其部署者为调用链协调器）。
     ///      salt == 0 走 CREATE（保留给 COORDINATOR_ROLE 的底层能力，协调器层已废除此通道）；
     ///      salt != 0 走 CREATE2 确定性地址（8888-only 体系：协调器校验尾号 + 预留占位，
     ///      目标地址已被占用时按 EIP-684 回滚 CloneFailed，天然防重复发币）。
-    function createToken(TokenConfig memory config, bytes32 salt)
+    function createToken(TokenConfig memory config, bytes32 salt, address creator)
         external
         onlyRole(COORDINATOR_ROLE)
         returns (TokenBundle memory)
@@ -68,6 +69,7 @@ contract TokenFactory is AccessControl {
         if (config.buyTax > MAX_TAX_BPS) revert BuyFeeTooHigh();
         if (config.sellTax > MAX_TAX_BPS) revert SellFeeTooHigh();
         if (config.feeRecipient == address(0)) revert InvalidFeeRecipient();
+        if (creator == address(0)) revert InvalidCreator();
         if (config.taxDuration == 0) revert InvalidTaxDuration();
         if (config.antiFarmerDuration > config.taxDuration) {
             revert InvalidAntiFarmerDuration();
@@ -81,9 +83,11 @@ contract TokenFactory is AccessControl {
         }
 
         IPancakeRouter02 router = IPancakeRouter02(routerAddress);
-        address pair = IPancakeFactory(router.factory()).createPair(token, router.WETH());
+        IPancakeFactory factory = IPancakeFactory(router.factory());
+        address pair = factory.getPair(token, router.WETH());
+        if (pair == address(0)) pair = factory.createPair(token, router.WETH());
 
-        emit TokenCreated(token, tx.origin, pair);
+        emit TokenCreated(token, creator, pair);
         return TokenBundle({token: token, pair: pair});
     }
 
