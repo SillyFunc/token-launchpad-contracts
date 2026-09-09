@@ -1,9 +1,8 @@
 # 前端对接文档 — Token Launchpad（BSC 测试网）
 
-> 源码版本：**testnet 分支当前部署安全修复版**（新增配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池、`refundTo` 合约钱包退款、`LAUNCH_DEADLINE = 30 分钟`）。下列地址为本次重新部署的当前链上地址，部署产物见 `broadcast/Deploy.s.sol/97/run-latest.json`。
-> 部署验证：5 个合约已全部上链，BscScan 源码验证正在重试（验证状态以附录 A 为准）；本次仅完成部署与链上接线核验，真实链全场景冒烟测试待后续执行。
+> 源码版本：**testnet 分支当前部署**（安全修复：配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池、`refundTo` 合约钱包退款；`LAUNCH_DEADLINE = 30 分钟` testnet 标定；新增 `setPresaleConfig` 批量配置入口）。下列地址为 2026-09-09 重新部署的当前链上地址，部署产物见 `broadcast/Deploy.s.sol/97/run-latest.json`。
+> 部署验证：5 个合约已全部上链，链上接线核验通过（见附录 A）；BscScan 源码验证已提交 5/5、队列处理中（验证状态以附录 A 为准）；本次部署的全场景链上冒烟测试待后续执行并回填附录 A。
 > ⚠️ **本节地址为 BSC 测试网当前部署**（chainId 97）；主网发布前须恢复主网参数并重新部署，不能复用这些地址。
-> ⚠️ 当前开发分支新增 `setPresaleConfig` 批量配置入口；本节所列旧部署在重新部署前不支持该 ABI。
 
 ---
 
@@ -38,11 +37,11 @@
 
 | 合约 | 地址 | 前端是否直接交互 |
 |---|---|---|
-| **CoordinatorFactory（唯一入口）** | `0x4da8d3a01516473d1859979be63bdc4aa2c85e24` | ✅ 主要交互对象 |
-| FlapTaxTokenV3 实现（模板） | `0xb2a62bfafd48e1337653a23dc8a8ef2a99aadf6a` | ❌ 仅克隆实现，不直接调用 |
-| TokenFactory | `0x3f1dceb2333ba045ed1f52cff20dcaf5bb1a14bb` | ❌ 由 Coordinator 调度 |
-| PRESALE 模板 | `0x85f920ec329bf9920c0a8400307d3292a35780f1` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
-| PresaleFactory | `0x841aa6243e40d38c779434e5950b14044a6346ae` | ❌ 由 Coordinator 调度 |
+| **CoordinatorFactory（唯一入口）** | `0x75F3532fA566d38954D6eDc9191a74Dfa100E846` | ✅ 主要交互对象 |
+| FlapTaxTokenV3 实现（模板） | `0xf751e29110959CB274f131c117408680106822EA` | ❌ 仅克隆实现，不直接调用 |
+| TokenFactory | `0x4b3401fd1590B3f217DE706B46CE29202f9D3e0c` | ❌ 由 Coordinator 调度 |
+| PRESALE 模板 | `0xe2E12ffC3D68c333884f3Ef514086Bb49Aac10bB` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
+| PresaleFactory | `0xF9725A4D59F9b48E74D2773b78F82e21B2d433D9` | ❌ 由 Coordinator 调度 |
 
 ### 1.3 第三方合约（PancakeSwap V2 测试网）
 
@@ -711,7 +710,7 @@ import { bscTestnet } from "viem/chains";
 
 const RPC  = "https://bsc-testnet-rpc.publicnode.com";
 const WSRPC = "wss://bsc-testnet-rpc.publicnode.com";
-const COORDINATOR = "0x4d2B161095f6B2A88832eae8FA07aeF8C1E1Be7c";
+const COORDINATOR = "0x75F3532fA566d38954D6eDc9191a74Dfa100E846";
 
 const client   = createPublicClient({ chain: bscTestnet, transport: http(RPC) });
 const wsClient = createPublicClient({ chain: bscTestnet, transport: webSocket(WSRPC) });
@@ -746,8 +745,8 @@ const tokenAbi = parseAbi(["function totalSupply() view returns (uint256)"]);
 // ---------- ① 发币（纯发币模式） ----------
 // 8888-only 体系：salt 必须是"搜好的尾号 8888 盐"（零盐/非 8888 盐直接 revert，
 // 见 2.4）。最小可行搜盐示例（生产建议 Web Worker 内跑并带随机种子派生）：
-const TOKEN_FACTORY = "0x9AF920a4556419b544cFEb41F71672174827290F";
-const IMPL = "0xf6F1Ca2741AC526d74696dDbD8ADba4cc9064329"; // tokenFactory.flapImplementation()
+const TOKEN_FACTORY = "0x4b3401fd1590B3f217DE706B46CE29202f9D3e0c";
+const IMPL = "0xf751e29110959CB274f131c117408680106822EA"; // tokenFactory.flapImplementation()
 const INIT_CODE = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73"
   + IMPL.toLowerCase().slice(2) + "5af43d82803e903d91602b57fd5bf3";
 function predict(salt: bigint) {                       // EIP-1014 / EIP-1167
@@ -816,22 +815,22 @@ try { ... } catch (e) {
 
 | 合约 | 部署交易 | 地址 | BscScan 验证 |
 |---|---|---|---|
-| FlapTaxTokenV3 impl | `0x6a3fd09d8c5083a0d9f7bec0d2ade4cb2980c4423a6263db9c97e14eff55c999` | `0xb2a62bfafd48e1337653a23dc8a8ef2a99aadf6a` | ⏳ 重试中 |
-| TokenFactory | `0x9f8c8b18f3ac62045cf114ed70d9e4b93cc5ba0aa2a060957b18c7fda0b38bbf` | `0x3f1dceb2333ba045ed1f52cff20dcaf5bb1a14bb` | ⏳ 重试中 |
-| PRESALE template | `0x8887d09a866a8ddfa94c9ed54b277c75db6ca88399167ebc77dcd085f9a90168` | `0x85f920ec329bf9920c0a8400307d3292a35780f1` | ⏳ 重试中 |
-| PresaleFactory | `0x6906914d744adf36cb6d01699dbce29555f728b3fc84f200bfdf24af310aa1c0` | `0x841aa6243e40d38c779434e5950b14044a6346ae` | ⏳ 重试中 |
-| CoordinatorFactory | `0xbaf7b6f6554a4de396f757b2cacfef3226eba3f97e162fe213082067bf3adcc1` | `0x4da8d3a01516473d1859979be63bdc4aa2c85e24` | ⏳ 重试中 |
-| TokenFactory 授权 | `0x4ed6a5fb692da935a746fa676491d5471323d64c921e4033b7d5892360b6f4d8` | — | — |
-| PresaleFactory 授权 | `0xc3a030b4a0228e02e84a7d48583eef122eb55e260957d07a0e05b53080dda336` | — | — |
+| FlapTaxTokenV3 impl | `0x4c2c07c8203916bf16907db5791e8bee67b9a56854856cd97e6ec840297c5b36` | `0xf751e29110959CB274f131c117408680106822EA` | ⏳ 队列处理中 |
+| TokenFactory | `0x5b506ce05450db904d2bc76a612249f37cf36d232987289f3bab0c8bf60f6462` | `0x4b3401fd1590B3f217DE706B46CE29202f9D3e0c` | ⏳ 队列处理中 |
+| PRESALE template | `0xa8ccc43cca23d149159f1b44b1781028d6282251b8f728b928bbb8665a3c8c3c` | `0xe2E12ffC3D68c333884f3Ef514086Bb49Aac10bB` | ⏳ 队列处理中 |
+| PresaleFactory | `0x3162f76d5ddc32c3d5bc1c4e10ccbe4659cc19a8c8e1432b3f3e21b3e0bdf814` | `0xF9725A4D59F9b48E74D2773b78F82e21B2d433D9` | ⏳ 队列处理中 |
+| CoordinatorFactory | `0x177606956f58076f954be772947dbeed3cbccbe2aa05a9bed0bd3571d01313ae` | `0x75F3532fA566d38954D6eDc9191a74Dfa100E846` | ⏳ 队列处理中 |
+| TokenFactory 授权 | `0x71674d40525018d6a7e536053c7155259925b0407be4688fc6846058cc00b5a9` | — | — |
+| PresaleFactory 授权 | `0xabfd5e587d8f84c615a05a1306c6c58baa8b7f00aa5075d88a905aa5364bd76b` | — | — |
 
 **接线核验（已通过）**：
 - 5 笔 CREATE + 2 笔角色授权 receipt 全部成功（chain 97）
 - 两工厂 `hasRole(COORDINATOR_ROLE, coordinator) == true`（授权交易已上链）
-- `tokenFactory.flapImplementation == 0xb2a62b...adf6`、`presaleFactory.presaleImplementation == 0x85f920...80f1`
-- **PRESALE 模板 `LAUNCH_DEADLINE() == 1800`（30 分钟）已在链上核验**；模板初始化锁地址待后续读取核验
+- `tokenFactory.flapImplementation == 0xf751e2...22EA`、`presaleFactory.presaleImplementation == 0xe2E12f...10bB`
+- **PRESALE 模板 `LAUNCH_DEADLINE() == 1800`（30 分钟）、模板 owner == 0x1（初始化锁）、`setPresaleConfig` 选择器在字节码中（staticcall revert `PresaleDisabled`，函数存在）均已链上核验**
 - `coordinator.routerAddress == 0xD99D...50D1`、`creationFee == 0.005 BNB`、`reservationFee == 0.001 BNB`、`factoryEnabled == true`
 
-**冒烟测试（当前部署全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包 `0x463c...21D3`，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）：
+**冒烟测试**（⚠️ 以下为**上一轮部署**的全场景端到端记录（合约行为语义一致，可作流程参考）；本轮新部署的冒烟测试待执行后回填。角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包 `0x463c...21D3`，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）：
 
 | # | 场景 | 关键交易 | 验证点（全部符合预期） |
 |---|---|---|---|
