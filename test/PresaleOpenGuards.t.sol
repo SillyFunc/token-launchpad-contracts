@@ -35,7 +35,7 @@ contract DummyTaxProcessor {}
 ///         恰等 presaleShare 的边界放行（Coordinator 恒等写入路径不受影响）
 ///      2) L1 倒置闸：setSoftCap(hardcap=0) 先于 setPresaleTerms(小 hardcap) 的乱序配置
 ///         令 softCap > hardcap → 拒开；修复配置后可开；hardcap=0（不限）边界不做倒置校验
-///      3) L2 条款完整性闸：条款未设置（price=0）拒开；duration=0（白盒注入）拒开
+///      3) L2 条款完整性闸：条款未设置（price=0）拒开；duration 越界（白盒注入）拒开
 ///      4) L3 实现锁：工厂构造即初始化模板本体，模板再 initialize 必 revert；
 ///         克隆实例不受模板锁定影响（重复创建两个克隆均正常初始化）
 ///      5) 多轮场景：第 1 轮失败 → relaunch 回配置期 → 第 2 轮终检依然生效，
@@ -55,7 +55,7 @@ contract PresaleOpenGuardsTest is Test {
     uint256 presaleShare = SUPPLY * 50 / 100;
 
     uint256 constant PRICE = 1e15; // 0.001 BNB/token
-    uint256 constant DURATION = 30 days;
+    uint256 constant DURATION = 24 hours;
 
     uint256 private _cloneNonce;
 
@@ -196,10 +196,24 @@ contract PresaleOpenGuardsTest is Test {
         p.configureLaunch(true, address(this), creatorShare, 0, presaleShare + poolShare);
     }
 
-    /// @dev 白盒注入 duration=0（公开 setter 恒 ≥ 1 分钟，构造唯一残留路径）：拒开
+    /// @dev 白盒注入 duration=0（公开 setter 恒处于合法区间，构造残留路径）：拒开
     function test_RevertWhen_OpenWithZeroDuration() public {
         stdstore.target(address(presale)).sig(presale.presaleDuration.selector).checked_write(uint256(0));
         assertEq(presale.presaleDuration(), 0);
+
+        vm.expectRevert(InvalidDuration.selector);
+        presale.openPresale();
+    }
+
+    function test_RevertWhen_OpenWithDurationBelowFloor() public {
+        stdstore.target(address(presale)).sig(presale.presaleDuration.selector).checked_write(uint256(59 minutes));
+
+        vm.expectRevert(InvalidDuration.selector);
+        presale.openPresale();
+    }
+
+    function test_RevertWhen_OpenWithDurationAboveCeiling() public {
+        stdstore.target(address(presale)).sig(presale.presaleDuration.selector).checked_write(uint256(90 hours + 1));
 
         vm.expectRevert(InvalidDuration.selector);
         presale.openPresale();

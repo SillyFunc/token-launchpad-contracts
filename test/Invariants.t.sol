@@ -172,8 +172,8 @@ contract Handler {
             minLiquidityAmount: minLiquidity,
             softCap: candidateSoftCap,
             startTime: 0,
-            duration: 1 minutes + (seed % (30 days - 1 minutes + 1)),
-            vestingDelay: 1 minutes + (seed % (90 days - 1 minutes + 1)),
+            duration: 1 hours + (seed % (90 hours - 1 hours + 1)),
+            vestingDelay: 7 days + (seed % (30 days - 7 days + 1)),
             vestingRate: 5 + (seed % 16),
             slippageProtection: seed % 1001
         });
@@ -271,7 +271,7 @@ contract Handler {
             minLiquidityAmount: 0.1 ether,
             softCap: hardSoftCap ? 3 ether : 0.1 ether, // 高线 → 失败路径；低线 → 成功路径
             startTime: 0,
-            duration: 30 days,
+            duration: 24 hours,
             vestingDelay: 7 days,
             vestingRate: 10,
             slippage: 0,

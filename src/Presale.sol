@@ -100,6 +100,10 @@ interface IWrappedNative {
 contract PRESALE is Ownable, ReentrancyGuard {
     uint256 private constant BPS_DENOMINATOR = 10000;
     uint256 private constant DEFAULT_SLIPPAGE = 500; // 5%
+    uint256 private constant MIN_PRESALE_DURATION = 1 hours;
+    uint256 private constant MAX_PRESALE_DURATION = 90 hours;
+    uint256 private constant MIN_VESTING_DELAY = 7 days;
+    uint256 private constant MAX_VESTING_DELAY = 30 days;
     uint256 public constant STATUS_FAILED = 4; // 发行失败态：开放 refund()/relaunchPresale()
     /// @notice 达软顶进状态 2 后，超过此时长未 launch()，任何人可 enforceLaunchDeadline 翻失败开放退款
     ///         （对齐 SmartDeFi LGE "结束后 72 小时未开盘参与者可开始取回资金"）
@@ -370,9 +374,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         // 加池下限不可归零：minLiquidityAmount=0 且 softCap=0 时 endPresale 必"达标"进状态 2，
         // 而 launch 加池 0 BNB 恒 revert、状态 2 无退款通道（softCap ≥ minLiquidity 下 0 值即死角）
         if (_minLiquidity == 0) revert ZeroMinLiquidity();
-        // @dev testnet 分支标定：Duration 下限放宽至 1 分钟（测试阶段联调）；
-        //      主网口径须收紧下限并同步前端文档区间（与 vestingDelay 同款处理）
-        if (_duration < 1 minutes || _duration > 30 days) revert InvalidDuration();
+        if (_duration < MIN_PRESALE_DURATION || _duration > MAX_PRESALE_DURATION) revert InvalidDuration();
     }
 
     function _applyPresaleTerms(
@@ -394,9 +396,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         emit PresaleTermsSet(_tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration);
     }
 
-    /// @notice 设置 vesting 释放节奏（vesting 恒开启；Rate 5-20%）
-    /// @dev testnet 分支标定：Delay 下限放宽至 1 分钟（测试阶段联调）；
-    ///      主网口径为 7 天（main 分支），若合回须同步恢复前端文档区间
+    /// @notice 设置 vesting 释放节奏（vesting 恒开启；主网周期为 7 ~ 30 天，Rate 5-20%）
     function setVestingConfig(uint256 _vestingDelay, uint256 _vestingRate)
         external
         onlyOwnerOrConfigurator
@@ -407,7 +407,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
     }
 
     function _validateVestingConfig(uint256 _vestingDelay, uint256 _vestingRate) internal pure {
-        if (_vestingDelay < 1 minutes || _vestingDelay > 90 days) revert InvalidVestingDelay();
+        if (_vestingDelay < MIN_VESTING_DELAY || _vestingDelay > MAX_VESTING_DELAY) revert InvalidVestingDelay();
         if (_vestingRate < 5 || _vestingRate > 20) revert InvalidVestingRate();
     }
 
@@ -462,10 +462,12 @@ contract PRESALE is Ownable, ReentrancyGuard {
     function openPresale() external onlyOwner {
         if (!presaleEnabled) revert PresaleDisabled();
         if (presaleStatus != 0) revert InvalidStatus();
-        // 条款完整性终检：price/duration 缺省为 0 时开盘 = 出生即死的预售（subscribe 恒
+        // 条款完整性终检：price/duration 缺省或 duration 越界时开盘 = 出生即死的预售（subscribe 恒
         // revert），配置事故须在提交时暴露而非让创建者白绕一圈失败流程
         if (presaleTokenPrice == 0) revert InvalidPrice();
-        if (presaleDuration == 0) revert InvalidDuration();
+        if (presaleDuration < MIN_PRESALE_DURATION || presaleDuration > MAX_PRESALE_DURATION) {
+            revert InvalidDuration();
+        }
         if (maxBuyPerWallet == 0) revert InvalidMaxBuyPerWallet();
         // 认购上限不得超过预售份额：超募会令托管仓代币 < 应付 claim 总额，launch 后
         // 后到认购者领不到币且状态 3 无退款通道（注定违约的配置须在源头拦截）；

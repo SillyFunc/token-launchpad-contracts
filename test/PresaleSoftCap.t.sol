@@ -106,7 +106,7 @@ contract PresaleSoftCapTest is Test {
         presale = new PRESALE();
         presale.initialize(address(this), address(router));
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
-        presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 30 days); // 0.001 BNB/token
+        presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours); // 0.001 BNB/token
         presale.setVestingConfig(7 days, 10);
         presale.setCoinAndPair(address(token), pair);
 
@@ -313,7 +313,7 @@ contract PresaleSoftCapTest is Test {
         vm.expectRevert(InvalidStatus.selector);
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
         vm.expectRevert(InvalidStatus.selector);
-        presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 30 days);
+        presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours);
         vm.expectRevert(InvalidStatus.selector);
         presale.setVestingConfig(7 days, 10);
         vm.expectRevert(InvalidStatus.selector);
@@ -341,7 +341,7 @@ contract PresaleSoftCapTest is Test {
         greedy.exec(address(p), data);
         data = abi.encodeCall(
             PRESALE.setPresaleTerms,
-            (1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 30 days) // price/caps/minLiq/start/duration
+            (1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours) // price/caps/minLiq/start/duration
         );
         greedy.exec(address(p), data);
         data = abi.encodeCall(PRESALE.setCoinAndPair, (address(t2), pair));

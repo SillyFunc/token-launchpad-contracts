@@ -56,7 +56,7 @@ contract LaunchpadTest is Test {
         presale = new PRESALE();
         presale.initialize(address(this), address(router));
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
-        presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 30 days); // 0.001 BNB/token
+        presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours); // 0.001 BNB/token
         presale.setVestingConfig(7 days, 10);
         presale.setCoinAndPair(address(token), pair);
 
@@ -120,14 +120,13 @@ contract LaunchpadTest is Test {
         assertEq(token.balanceOf(address(this)), (creatorShare * 3) / 10);
     }
 
-    /// @dev testnet 分支标定回归：vestingDelay 下限放宽至 1 分钟（主网口径 7 天）。
-    ///      低于 1 分钟仍拒绝；1 分钟周期端到端走通：认购 → 开盘 → 过满 1 周期领取
-    function test_VestingDelayTestnetFloor() public {
+    /// @dev 主网边界：7 天前拒绝；满 7 天周期端到端走通：认购 → 开盘 → 过满 1 周期领取
+    function test_VestingDelayMainnetFloor() public {
         vm.expectRevert(InvalidVestingDelay.selector);
-        presale.setVestingConfig(30 seconds, 10);
+        presale.setVestingConfig(7 days - 1, 10);
 
-        presale.setVestingConfig(1 minutes, 10);
-        assertEq(presale.vestingDelay(), 1 minutes);
+        presale.setVestingConfig(7 days, 10);
+        assertEq(presale.vestingDelay(), 7 days);
 
         address alice = address(0x1234);
         vm.deal(alice, 10 ether);
@@ -137,8 +136,8 @@ contract LaunchpadTest is Test {
         presale.endPresale();
         presale.launch();
 
-        // 过满 1 个 1 分钟周期 → 散户 1000 ether 份额 × 10% 解锁
-        vm.warp(block.timestamp + 1 minutes + 1);
+        // 过满 1 个 7 天周期 → 散户 1000 ether 份额 × 10% 解锁
+        vm.warp(block.timestamp + 7 days + 1);
         assertEq(presale.getVestedAmount(alice), 100 ether);
         vm.prank(alice);
         presale.claim();

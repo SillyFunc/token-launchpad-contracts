@@ -330,7 +330,7 @@ contract CreatorBuyTest is Test {
             minLiquidityAmount: 0.1 ether,
             softCap: softCap,
             startTime: 0,
-            duration: 30 days,
+            duration: 24 hours,
             vestingDelay: 7 days,
             vestingRate: 10,
             slippage: 0,

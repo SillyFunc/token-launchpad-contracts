@@ -20,6 +20,7 @@ import {
     SharesLocked,
     SoftCapExceedsHardcap,
     InvalidMaxPresaleTokens,
+    InvalidVestingDelay,
     NotOwnerOrConfigurator
 } from "src/Presale.sol";
 
@@ -69,7 +70,7 @@ contract PresaleDurationTest is Test {
     uint256 presaleShare = SUPPLY * 50 / 100;
 
     uint256 constant PRICE = 1e15; // 0.001 BNB/token
-    uint256 constant DURATION = 30 days;
+    uint256 constant DURATION = 24 hours;
 
     uint256 private _cloneNonce;
 
@@ -99,19 +100,34 @@ contract PresaleDurationTest is Test {
 
     function test_RevertWhen_DurationBelowFloor() public {
         vm.expectRevert(InvalidDuration.selector);
-        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 59 seconds);
+        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 59 minutes);
     }
 
     function test_RevertWhen_DurationAboveCeiling() public {
         vm.expectRevert(InvalidDuration.selector);
-        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 30 days + 1);
+        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 90 hours + 1);
     }
 
     function test_DurationBoundsInclusive() public {
-        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 1 minutes);
-        assertEq(presale.presaleDuration(), 1 minutes);
-        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 30 days);
-        assertEq(presale.presaleDuration(), 30 days);
+        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 1 hours);
+        assertEq(presale.presaleDuration(), 1 hours);
+        presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 90 hours);
+        assertEq(presale.presaleDuration(), 90 hours);
+    }
+
+    function test_VestingDelayBoundsInclusive() public {
+        presale.setVestingConfig(7 days, 10);
+        assertEq(presale.vestingDelay(), 7 days);
+        presale.setVestingConfig(30 days, 10);
+        assertEq(presale.vestingDelay(), 30 days);
+    }
+
+    function test_RevertWhen_VestingDelayOutsideBounds() public {
+        vm.expectRevert(InvalidVestingDelay.selector);
+        presale.setVestingConfig(7 days - 1, 10);
+
+        vm.expectRevert(InvalidVestingDelay.selector);
+        presale.setVestingConfig(30 days + 1, 10);
     }
 
     // ---------------------------------------------------------------------------
@@ -416,6 +432,20 @@ contract PresaleDurationTest is Test {
         presale.setPresaleConfig(config);
     }
 
+    function test_RevertWhen_BatchConfigVestingDelayOutsideBounds() public {
+        _failAndRefundAll();
+        presale.relaunchPresale();
+        PRESALE.PresaleRoundConfig memory config = _roundConfig();
+
+        config.vestingDelay = 7 days - 1;
+        vm.expectRevert(InvalidVestingDelay.selector);
+        presale.setPresaleConfig(config);
+
+        config.vestingDelay = 30 days + 1;
+        vm.expectRevert(InvalidVestingDelay.selector);
+        presale.setPresaleConfig(config);
+    }
+
     function test_InvalidBatchConfigRollsBackEveryField() public {
         _failAndRefundAll();
         presale.relaunchPresale();
@@ -453,7 +483,7 @@ contract PresaleDurationTest is Test {
         assertEq(presale.presaleStatus(), 0, "back to config phase");
 
         // 商业条款可改（重开的核心诉求：换个价/换个窗口再试）
-        presale.setPresaleTerms(2e15, presaleShare, 5e7 ether, 0, 0.05 ether, 0, 7 days);
+        presale.setPresaleTerms(2e15, presaleShare, 5e7 ether, 0, 0.05 ether, 0, 72 hours);
         presale.setSoftCap(0.05 ether);
         assertEq(presale.presaleTokenPrice(), 2e15);
 
@@ -612,7 +642,7 @@ contract PresaleDurationTest is Test {
             minLiquidityAmount: 0.2 ether,
             softCap: 0.5 ether,
             startTime: block.timestamp + 1 days,
-            duration: 7 days,
+            duration: 72 hours,
             vestingDelay: 14 days,
             vestingRate: 20,
             slippageProtection: 250
