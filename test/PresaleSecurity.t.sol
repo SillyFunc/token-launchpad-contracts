@@ -213,7 +213,7 @@ contract PresaleSecurityTest is Test {
             softCap: 0.1 ether,
             startTime: 0,
             duration: 24 hours,
-            vestingDelay: 7 days,
+            vestingDelay: 5 minutes,
             vestingRate: 10,
             slippage: 0,
             creatorBuyTokens: 0

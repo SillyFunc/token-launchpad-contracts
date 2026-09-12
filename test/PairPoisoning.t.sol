@@ -172,7 +172,7 @@ contract PairPoisoningTest is Test {
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
         // softCap == minLiquidity == 0.1 BNB；hardcap 0（不限）
         presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 1 days);
-        presale.setVestingConfig(7 days, 10);
+        presale.setVestingConfig(5 minutes, 10);
         presale.setSoftCap(0.1 ether);
         presale.setCoinAndPair(address(token), address(pair));
 

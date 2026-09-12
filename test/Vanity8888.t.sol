@@ -180,7 +180,7 @@ contract Vanity8888Test is Test {
         assertEq(uint160(token) & 0xFFFF, SUFFIX, "still ends with 8888");
 
         // 一个周期后按份额领取
-        skip(7 days);
+        skip(5 minutes);
         vm.prank(creator);
         sale.claim();
         assertEq(sale.claimedTokens(creator), SUPPLY * 3000 / 10_000 * 10 / 100, "first period 10% of 30%");
@@ -232,7 +232,7 @@ contract Vanity8888Test is Test {
             softCap: 0.1 ether,
             startTime: 0,
             duration: 24 hours,
-            vestingDelay: 7 days,
+            vestingDelay: 5 minutes,
             vestingRate: 10,
             slippage: 0,
             creatorBuyTokens: 0

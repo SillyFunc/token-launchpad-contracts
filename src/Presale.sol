@@ -102,8 +102,8 @@ contract PRESALE is Ownable, ReentrancyGuard {
     uint256 private constant DEFAULT_SLIPPAGE = 500; // 5%
     uint256 private constant MIN_PRESALE_DURATION = 1 hours;
     uint256 private constant MAX_PRESALE_DURATION = 90 hours;
-    uint256 private constant MIN_VESTING_DELAY = 7 days;
-    uint256 private constant MAX_VESTING_DELAY = 30 days;
+    uint256 private constant MIN_VESTING_DELAY = 5 minutes;
+    uint256 private constant MAX_VESTING_DELAY = 30 minutes;
     uint256 public constant STATUS_FAILED = 4; // 发行失败态：开放 refund()/relaunchPresale()
     /// @notice 达软顶进状态 2 后，超过此时长未 launch()，任何人可 enforceLaunchDeadline 翻失败开放退款
     ///         （对齐 SmartDeFi LGE "结束后 72 小时未开盘参与者可开始取回资金"）
@@ -243,7 +243,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         _transferOwnership(_owner);
         router = IPancakeRouter02(_router);
         slippageProtection = DEFAULT_SLIPPAGE;
-        vestingDelay = 7 days;
+        vestingDelay = MIN_VESTING_DELAY;
         vestingRate = 10;
         minLiquidityAmount = 0.1 ether;
         softCap = minLiquidityAmount; // 默认与加池下限一致，行为向后兼容
@@ -396,7 +396,7 @@ contract PRESALE is Ownable, ReentrancyGuard {
         emit PresaleTermsSet(_tokenPrice, _maxTokens, _maxBuyPerWallet, _hardcap, _minLiquidity, _startTime, _duration);
     }
 
-    /// @notice 设置 vesting 释放节奏（vesting 恒开启；主网周期为 7 ~ 30 天，Rate 5-20%）
+    /// @notice 设置 vesting 释放节奏（vesting 恒开启；主网周期为 5 ~ 30 分钟，Rate 5-20%）
     function setVestingConfig(uint256 _vestingDelay, uint256 _vestingRate)
         external
         onlyOwnerOrConfigurator

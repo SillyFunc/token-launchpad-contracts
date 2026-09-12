@@ -170,7 +170,7 @@ contract CoordinatorTest is Test {
         assertEq(uint8(FlapTaxTokenV3(token).state()), uint8(IFlapTaxTokenV3.PoolState.TaxEnforcedAntiFarmer));
         assertEq(FlapTaxTokenV3(token).owner(), address(0)); // 已 renounce
 
-        vm.warp(block.timestamp + 7 days + 1);
+        vm.warp(block.timestamp + 5 minutes + 1);
         vm.prank(alice);
         PRESALE(payable(presale)).claim();
         assertEq(IERC20Lite(token).balanceOf(alice), 100 ether);
@@ -400,7 +400,7 @@ contract CoordinatorTest is Test {
             softCap: 0.5 ether, // 常规路径募集 1 BNB > 软顶；失败路径用例会单独抬高
             startTime: 0,
             duration: 24 hours,
-            vestingDelay: 7 days,
+            vestingDelay: 5 minutes,
             vestingRate: 10,
             slippage: 0,
             creatorBuyTokens: 0

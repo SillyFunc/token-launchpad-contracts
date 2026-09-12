@@ -173,7 +173,7 @@ contract Handler {
             softCap: candidateSoftCap,
             startTime: 0,
             duration: 1 hours + (seed % (90 hours - 1 hours + 1)),
-            vestingDelay: 7 days + (seed % (30 days - 7 days + 1)),
+            vestingDelay: 5 minutes + (seed % (30 minutes - 5 minutes + 1)),
             vestingRate: 5 + (seed % 16),
             slippageProtection: seed % 1001
         });
@@ -272,7 +272,7 @@ contract Handler {
             softCap: hardSoftCap ? 3 ether : 0.1 ether, // 高线 → 失败路径；低线 → 成功路径
             startTime: 0,
             duration: 24 hours,
-            vestingDelay: 7 days,
+            vestingDelay: 5 minutes,
             vestingRate: 10,
             slippage: 0,
             creatorBuyTokens: 0

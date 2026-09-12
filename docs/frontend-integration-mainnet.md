@@ -2,7 +2,9 @@
 
 > 本文只适用于 BSC 主网（chainId `56`）的新部署。测试网地址、测试网时间参数和广播产物请使用 [测试网文档](frontend-integration.md)，不得混用。
 >
-> **部署地址尚未发布。** TokenFactory、PresaleFactory、CoordinatorFactory、PRESALE 模板和 FlapTaxTokenV3 模板地址只能在部署后，从 `broadcast/Deploy.s.sol/56/run-latest.json` 与链上浏览器核验结果填入；在此之前一律保持 `TBD`。
+> **当前正式部署已发布，且 5 个合约均已完成 BscScan 源码验证。** 地址以
+> `broadcast/Deploy.s.sol/56/run-latest.json` 和下方浏览器链接为准。后续发布新版本时，
+> 必须重新核验并同步更新本文，不能沿用本次地址。
 
 ---
 
@@ -12,11 +14,11 @@
 |---|---|
 | 网络 | BNB Smart Chain Mainnet |
 | chainId | `56` |
-| TokenFactory | `TBD — 以已核验 broadcast 产物为准` |
-| PresaleFactory | `TBD — 以已核验 broadcast 产物为准` |
-| CoordinatorFactory | `TBD — 以已核验 broadcast 产物为准` |
-| PRESALE 模板 | `TBD — 以已核验 broadcast 产物为准` |
-| FlapTaxTokenV3 模板 | `TBD — 以已核验 broadcast 产物为准` |
+| TokenFactory | [`0x04556cBc53C9e994522B008B676958e715545564`](https://bscscan.com/address/0x04556cBc53C9e994522B008B676958e715545564) |
+| PresaleFactory | [`0x7a6B4DA821f4B2aDb1432E06E7b7aD2F20972a1A`](https://bscscan.com/address/0x7a6B4DA821f4B2aDb1432E06E7b7aD2F20972a1A) |
+| CoordinatorFactory | [`0xc7284F96716E4FbB3f794Cb407D882C29AA653B1`](https://bscscan.com/address/0xc7284F96716E4FbB3f794Cb407D882C29AA653B1) |
+| PRESALE 模板 | [`0x6b51064D62018De9832590f1788078bDFB64Aca5`](https://bscscan.com/address/0x6b51064D62018De9832590f1788078bDFB64Aca5) |
+| FlapTaxTokenV3 模板 | [`0xd7E12Ecd6406B993D94F0bc67a4a62681f50aA99`](https://bscscan.com/address/0xd7E12Ecd6406B993D94F0bc67a4a62681f50aA99) |
 
 Pancake Router 与 WBNB 不应由前端硬编码：读取已部署
 `CoordinatorFactory.routerAddress()`，再读取该 Router 的 `WETH()`。部署前必须链上确认两项调用均成功，且 `factory()` 返回非零地址。
@@ -28,11 +30,11 @@ Pancake Router 与 WBNB 不应由前端硬编码：读取已部署
 | 参数 | 合法范围 | 说明 |
 |---|---:|---|
 | `duration` | `1 hours ~ 90 hours`（`3600 ~ 324000`） | 单轮预售持续时间；边界值均允许 |
-| `vestingDelay` | `7 days ~ 30 days` | 每期解锁间隔；边界值均允许 |
+| `vestingDelay` | `5 minutes ~ 30 minutes`（`300 ~ 1800`） | 每期解锁间隔；边界值均允许 |
 | `vestingRate` | `5 ~ 20` | 每期释放百分比 |
 | `LAUNCH_DEADLINE` | `72 hours` | 预售达标结束后，任何人可触发失败退款的窗口 |
 
-`duration = 300`（5 分钟）和 `vestingDelay < 7 days` 在主网版本都会以
+`duration = 300`（5 分钟）和 `vestingDelay < 5 minutes` 或 `vestingDelay > 30 minutes` 在主网版本都会以
 `InvalidDuration` 或 `InvalidVestingDelay` 回退。
 
 ## 3. 初始预售与重开预售
@@ -51,7 +53,7 @@ struct PresaleRoundConfig {
     uint256 softCap;              // minLiquidityAmount ≤ softCap；有 hardcap 时 ≤ hardcap
     uint256 startTime;            // 秒级时间戳；0 = 开售后立即开始
     uint256 duration;             // 1 hours ~ 90 hours
-    uint256 vestingDelay;         // 7 days ~ 30 days
+    uint256 vestingDelay;         // 5 minutes ~ 30 minutes
     uint256 vestingRate;          // 5 ~ 20
     uint256 slippageProtection;   // 0 ~ 1000 bps；500 = 5%
 }
@@ -93,3 +95,22 @@ const presaleAbi = parseAbi([
 5. 在链上用最小金额走完整冒烟流程：创建、配置、认购、结算、开盘、领取；重开流程另行验证。
 
 共享的事件、错误码和交易交互说明可参考测试网文档，但当两者存在差异时，本文的主网时间规则与主网部署地址具有最高优先级。
+
+## 6. 管理员更新平台费用
+
+创建费和地址预留费均由 `CoordinatorFactory.DEFAULT_ADMIN_ROLE` 管理，前端必须继续通过
+`creationFee()` 和 `reservationFee()` 动态读取，不能硬编码。管理员可使用
+`script/SetPlatformFees.s.sol` 更新两项费用；两个金额均以 BNB wei 传入，且必须非零。
+
+```bash
+forge script script/SetPlatformFees.s.sol:SetPlatformFees \
+  --sig "run(address,uint256,uint256)" \
+  0xc7284F96716E4FbB3f794Cb407D882C29AA653B1 \
+  5000000000000000 \
+  1000000000000000 \
+  --rpc-url bsc \
+  --account <FOUNDRY_ACCOUNT> \
+  --broadcast
+```
+
+上例设置创建费为 `0.005 BNB`、预留费为 `0.001 BNB`。脚本仅对发生变化的费用发送交易；因为已部署合约提供的是两个独立 setter，若两项均变更，将产生两笔管理员交易，并非原子批量更新。广播账户必须拥有该 CoordinatorFactory 的 `DEFAULT_ADMIN_ROLE`。

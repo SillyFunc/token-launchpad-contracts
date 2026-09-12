@@ -57,7 +57,7 @@ contract LaunchpadTest is Test {
         presale.initialize(address(this), address(router));
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
         presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours); // 0.001 BNB/token
-        presale.setVestingConfig(7 days, 10);
+        presale.setVestingConfig(5 minutes, 10);
         presale.setCoinAndPair(address(token), pair);
 
         // 模拟 Coordinator：全量代币转给 PRESALE + token 所有权移交
@@ -94,7 +94,7 @@ contract LaunchpadTest is Test {
         assertEq(presale.presaleStatus(), 3);
 
         // ===== vesting 领取（散户 alice）=====
-        vm.warp(block.timestamp + 7 days + 1);
+        vm.warp(block.timestamp + 5 minutes + 1);
         uint256 claimable = presale.getVestedAmount(alice); // 散户 1000ether 的 10%
         assertEq(claimable, 100 ether);
 
@@ -104,29 +104,29 @@ contract LaunchpadTest is Test {
         assertEq(presale.claimedTokens(alice), 100 ether);
 
         // 第二个周期再领；视图应报告“下一个”释放边界而非首个周期边界
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(block.timestamp + 5 minutes);
         (,, uint256 aliceClaimed, uint256 nextVestingTime) = presale.getUserVestingStatus(alice);
         assertEq(aliceClaimed, 100 ether);
-        assertEq(nextVestingTime, presale.vestingStart() + 3 * 7 days, "next boundary, not first");
+        assertEq(nextVestingTime, presale.vestingStart() + 3 * 5 minutes, "next boundary, not first");
         vm.prank(alice);
         presale.claim();
         assertEq(token.balanceOf(alice), 200 ether);
 
         // 创建者 30% 同套 vesting 可领（此时已过 3 个周期 → 30%）
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(block.timestamp + 5 minutes);
         uint256 creatorClaimable = presale.getVestedAmount(address(this));
         assertEq(creatorClaimable, (creatorShare * 3) / 10);
         presale.claim();
         assertEq(token.balanceOf(address(this)), (creatorShare * 3) / 10);
     }
 
-    /// @dev 主网边界：7 天前拒绝；满 7 天周期端到端走通：认购 → 开盘 → 过满 1 周期领取
+    /// @dev 主网边界：5 分钟前拒绝；满 5 分钟周期端到端走通：认购 → 开盘 → 过满 1 周期领取
     function test_VestingDelayMainnetFloor() public {
         vm.expectRevert(InvalidVestingDelay.selector);
-        presale.setVestingConfig(7 days - 1, 10);
+        presale.setVestingConfig(5 minutes - 1, 10);
 
-        presale.setVestingConfig(7 days, 10);
-        assertEq(presale.vestingDelay(), 7 days);
+        presale.setVestingConfig(5 minutes, 10);
+        assertEq(presale.vestingDelay(), 5 minutes);
 
         address alice = address(0x1234);
         vm.deal(alice, 10 ether);
@@ -136,8 +136,8 @@ contract LaunchpadTest is Test {
         presale.endPresale();
         presale.launch();
 
-        // 过满 1 个 7 天周期 → 散户 1000 ether 份额 × 10% 解锁
-        vm.warp(block.timestamp + 7 days + 1);
+        // 过满 1 个 5 分钟周期 → 散户 1000 ether 份额 × 10% 解锁
+        vm.warp(block.timestamp + 5 minutes + 1);
         assertEq(presale.getVestedAmount(alice), 100 ether);
         vm.prank(alice);
         presale.claim();
@@ -167,7 +167,7 @@ contract LaunchpadTest is Test {
         assertEq(token.balanceOf(address(presale)), creatorShare + 1000 ether);
 
         // 散户 vesting 领取不受影响
-        vm.warp(block.timestamp + 7 days + 1);
+        vm.warp(block.timestamp + 5 minutes + 1);
         vm.prank(alice);
         presale.claim();
         assertEq(token.balanceOf(alice), 100 ether);

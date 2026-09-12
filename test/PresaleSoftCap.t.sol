@@ -107,7 +107,7 @@ contract PresaleSoftCapTest is Test {
         presale.initialize(address(this), address(router));
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
         presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours); // 0.001 BNB/token
-        presale.setVestingConfig(7 days, 10);
+        presale.setVestingConfig(5 minutes, 10);
         presale.setCoinAndPair(address(token), pair);
 
         // 模拟 Coordinator：全量代币转给 PRESALE + token 所有权移交
@@ -315,7 +315,7 @@ contract PresaleSoftCapTest is Test {
         vm.expectRevert(InvalidStatus.selector);
         presale.setPresaleTerms(1e15, presaleShare, 1e8 ether, 0, 0.1 ether, 0, 24 hours);
         vm.expectRevert(InvalidStatus.selector);
-        presale.setVestingConfig(7 days, 10);
+        presale.setVestingConfig(5 minutes, 10);
         vm.expectRevert(InvalidStatus.selector);
         presale.setSlippageProtection(500);
         vm.expectRevert(InvalidStatus.selector);

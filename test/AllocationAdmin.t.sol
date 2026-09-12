@@ -169,7 +169,7 @@ contract AllocationAdminTest is Test {
         assertEq(IERC20Lite(tokenB).balanceOf(address(router)), SUPPLY * 2000 / 10_000, "pool 20% added");
 
         // 一个周期后创建者按新 creatorShare（40%）领取首期 10%
-        skip(7 days);
+        skip(5 minutes);
         vm.prank(creator);
         saleB.claim();
         assertEq(saleB.claimedTokens(creator), SUPPLY * 4000 / 10_000 * 10 / 100, "first period 10% of 40%");
@@ -304,7 +304,7 @@ contract AllocationAdminTest is Test {
             softCap: softCap,
             startTime: 0,
             duration: 24 hours,
-            vestingDelay: 7 days,
+            vestingDelay: 5 minutes,
             vestingRate: 10,
             slippage: 0,
             creatorBuyTokens: 0

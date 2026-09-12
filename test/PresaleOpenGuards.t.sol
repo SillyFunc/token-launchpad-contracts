@@ -80,7 +80,7 @@ contract PresaleOpenGuardsTest is Test {
     function _configureValid() internal {
         presale.configureLaunch(true, address(this), creatorShare, poolShare, presaleShare);
         presale.setPresaleTerms(PRICE, presaleShare, 1e8 ether, 0, 0.1 ether, 0, DURATION);
-        presale.setVestingConfig(7 days, 10);
+        presale.setVestingConfig(5 minutes, 10);
         presale.setSoftCap(0.1 ether);
     }
 
