@@ -37,5 +37,18 @@ contract Deploy is Script {
         console2.log("CoordinatorFactory:", address(coordinator));
 
         vm.stopBroadcast();
+
+        string memory deploymentKey = "deployment";
+        vm.serializeUint(deploymentKey, "chainId", block.chainid);
+        vm.serializeAddress(deploymentKey, "flapTaxTokenImplementation", address(flapImpl));
+        vm.serializeAddress(deploymentKey, "tokenFactory", address(tokenFactory));
+        vm.serializeAddress(deploymentKey, "presaleImplementation", address(presaleTemplate));
+        vm.serializeAddress(deploymentKey, "presaleFactory", address(presaleFactory));
+        string memory deploymentJson = vm.serializeAddress(deploymentKey, "coordinatorFactory", address(coordinator));
+
+        string memory deploymentDirectory = "script/deployments";
+        vm.createDir(deploymentDirectory, true);
+        string memory deploymentPath = string.concat(deploymentDirectory, "/", vm.toString(block.chainid), ".json");
+        vm.writeJson(deploymentJson, deploymentPath);
     }
 }

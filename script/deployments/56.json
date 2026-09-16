@@ -1,0 +1,8 @@
+{
+  "chainId": 56,
+  "coordinatorFactory": "0xc7284f96716E4FbB3F794CB407D882C29aA653B1",
+  "flapTaxTokenImplementation": "0xd7E12EcD6406B993d94F0bC67A4a62681F50AA99",
+  "presaleFactory": "0x7A6B4da821F4b2aDB1432E06E7B7aD2f20972A1A",
+  "presaleImplementation": "0x6b51064d62018DE9832590f1788078BdFB64ACa5",
+  "tokenFactory": "0x04556cBC53C9E994522b008B676958e715545564"
+}
