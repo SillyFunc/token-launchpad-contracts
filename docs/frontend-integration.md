@@ -45,6 +45,7 @@
 | TokenFactory | `0x9AF920a4556419b544cFEb41F71672174827290F` | ❌ 由 Coordinator 调度 |
 | PRESALE 模板 | `0xA961A6C6131a4E00267dAc75880364762E886B9A` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
 | PresaleFactory | `0x23095009C1C912615d3707d5BE9a28f0220d8684` | ❌ 由 Coordinator 调度 |
+| BuybackVault 实现 / BuybackVaultFactory | **尚未随当前链上旧部署发布** | 金库实例由 `createTokenWithVault` 克隆；地址以重新部署后的 `broadcast/` 为准 |
 
 ### 1.3 第三方合约（PancakeSwap V2 测试网）
 
@@ -85,7 +86,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 >
 > ⚠️ `out/` 在 .gitignore 中且会被 `forge clean` 清空——前端构建流程不要依赖仓库内拷贝，应在 CI 里执行 `forge build` / `forge inspect` 动态生成，或由后端发布 ABI 包。
 
-前端主要需要的 ABI：`CoordinatorFactory`（发币/配置入口）、`PRESALE`（每个代币的托管仓实例，地址由 `tokenPresales(token)` 查得）、`FlapTaxTokenV3`（ERC20 + `state()` + `maxSupply()`）、Pancake `IPancakePair`/`IPancakeRouter02`（价格与加池）。
+前端主要需要的 ABI：`CoordinatorFactory`（发币/配置入口）、`PRESALE`（每个代币的托管仓实例，地址由 `tokenPresales(token)` 查得）、`FlapTaxTokenV3`（ERC20 + `state()` + `maxSupply()`）、`BuybackVault`（可选回购金库，地址由 `tokenVaults(token)` 查得）、Pancake `IPancakePair`/`IPancakeRouter02`（价格与加池）。
 
 ---
 
@@ -101,6 +102,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
       └→ 链上自动：克隆代币 + 建立/复用 canonical Pair + 部署 TaxProcessor + 建托管仓
          全量代币入托管仓，token 所有权 → 托管仓，托管仓所有权 → 创建者
          （salt 必为搜好的 8888 靓号盐，见 2.4；地址尾号强制 8888）
+         可选：`createTokenWithVault(config, salt, buyback)` 税金改打入自动回购金库（见 3.1.1）
 
 ② presale.claimAllTokens()                   创建者（托管仓 owner）
       └→ 一笔内自动：startMigration → finalizeMigration（税生效）
@@ -197,7 +199,8 @@ struct TokenConfig {
     string  meta;                    // 元数据 URI（IPFS CID 等），可为空串
     uint16  buyTax;                  // 买税 bps，0 ≤ x ≤ 1000（即 0–10%）
     uint16  sellTax;                 // 卖税 bps，0 ≤ x ≤ 1000
-    address feeRecipient;            // 唯一税金收款人（税清算 swap 成 BNB 后到账；各类失败兜底接收）
+    address feeRecipient;            // 唯一税金收款人（税清算 swap 成 BNB 后到账；各类失败兜底接收）。
+                                     // createTokenWithVault 会忽略此字段，覆盖为金库地址
     uint256 taxDuration;             // 税持续时间（秒），开盘/领取时开始计时，到期自动 TaxFree
     uint256 antiFarmerDuration;      // 防夹持续时间（秒），必须 ≤ taxDuration，可为 0
     uint256 liqExpectedOutputAmount; // 清算方向调节参考值（BNB wei）；0 = 关闭该特性，建议前端固定传 0
@@ -208,6 +211,43 @@ struct TokenConfig {
 - `buyTax`/`sellTax` 超过 1000 bps 直接 revert（`InvalidPrice` 之外的 `TokenFactory` 校验），前端滑杆限制 0–10%
 - 代币固定 **18 位小数**、固定总量（读 `token.maxSupply()`，**前端严禁硬编码**；当前部署即 `1e9 ether` = 10 亿枚主网口径，以读链为准——更早的 100 万枚口径代币属于旧部署（判定见 7.8 的 `tokenExists`））
 - 代币支持 ERC20Permit（`permit` 签名授权可用）
+
+### 3.1.1 自动回购金库（可选）
+
+`createToken` 行为不变：税金打到 `feeRecipient`（钱包）。
+
+要启用金库，改调：
+
+```solidity
+function createTokenWithVault(
+    TokenConfig tokenConfig,
+    bytes32 salt,
+    BuybackConfig buyback
+) payable returns (address token, address presale, address vault);
+```
+
+`tokenConfig.feeRecipient` 被覆盖为金库地址。读 `coordinator.tokenVaults(token)` 得到金库；`0x0` 表示未启用。
+
+```solidity
+enum BuybackMode { TokenBurn, LpBurn }               // 0 买本币销毁 / 1 买本币加 LP 后 LP 死锁（失败回退 0）
+enum TriggerMode { Time, Balance, TimeAndBalance }   // 0 按时间 / 1 按余额门槛 / 2 两者都满足
+
+struct BuybackConfig {
+    BuybackMode mode;
+    TriggerMode trigger;
+    uint64  startDelayMinutes;  // 模式 1 必须 0；模式 0/2 为 1…525600
+    uint64  intervalMinutes;    // 1…525600（1 分钟…365 天）
+    uint256 triggerAmount;      // 模式 0 必须 0；模式 1/2 为 1…1000 * 1e18，且必须是整 BNB
+    uint256 buybackAmount;      // 0.001…10 BNB（wei），必须是 0.001 BNB 的整数倍
+    uint256 callerReward;       // 成功执行付给调用者的 BNB，可为 0；须 < buybackAmount 且 ≤ 0.01 BNB
+}
+```
+
+**`executeBuyback()` 谁来调：** 公开函数，任何人可调——前端「立即回购」按钮、平台 keeper、第三方机器人。条件满足才成功，并支付 `callerReward`。不要在清算/`receive` 里自动回购。金库**没有**创建者提款入口。
+
+触发金额 `triggerAmount` ≠ 每笔花费 `buybackAmount`。例如门槛 1 BNB、每笔 0.015 BNB：攒到 1 BNB 才开始，每次只花 0.015。
+
+LP 路径若 `addLiquidityETH` 失败，同笔原子回退为 Token 买毁。
 
 ### 3.2 `PresaleConfig`（预售配置，11 字段，仅 `setupPresale` 一次性生效）
 
@@ -344,6 +384,7 @@ owner=托管仓              owner=0x0（出口交易内自动 renounce）
 | 事件 | topic0（keccak） | 用途 |
 |---|---|---|
 | `TokenPresalePairCreated(address,address,address,uint256)` | `0xd82d53ac9fb3ce23bd37e0b97a838b1dd1a29249c5fc8044b050d2717bfe7ac6` | 新代币上架（coordinator 上监听，全量列表增量维护） |
+| `BuybackVaultAttached(address,address,uint8,uint8)` | `0x96c777e9590576a88dc65a7cfa56c61acc786fd14823ef67c4429b5e01955f0e` | 发币启用金库（coordinator；indexed token/vault，mode/trigger 非 indexed） |
 | `TokenCreated(address,address,address)` | `0xb5a149b73151b44553ff737ca050c61de65038e2ae67ec044215d3261cc6fa00` | TokenFactory 创建代币；第二个 indexed 参数为实际创建者（含智能钱包，不使用 tx.origin） |
 | `PresaleCreated(address,address)` | `0xcfea6066a7ff70439f7cfe020aea9709cf4b7cb462225660895dfcc5c38716ae` | PresaleFactory 克隆创建；第二个 indexed 参数为实际代币创建者（非 Coordinator） |
 | `AllocationUpdated(uint256,uint256,uint256)` | `0x21c55dfccedf7a8f464081b4c32abf493ebe4c9a653d37fd29365b3775a79cfd` | 分配比例变更（coordinator 上监听，变更后更新本地缓存的比例展示） |
@@ -527,6 +568,25 @@ await wallet.writeContract({
 | `0xd64bf586` | AddressAlreadyDeployed | 预言地址已有代码 | 地址已被占用 |
 | `0x106874c5` | NotReserver | 兑现他人预留的盐 | 该靓号已被他人预留 |
 | `0x0baf7432` | InvalidAllocation | setAllocation 比例含 0 项或三项之和 ≠ 10000 bps | 分配比例配置非法 |
+| `0x2f64614a` | BuybackVaultFactoryNotSet | 未配置金库工厂就调 createTokenWithVault | 金库功能尚未启用 |
+| `0xe227113d` | ZeroBuybackVaultFactory | setBuybackVaultFactory(0) | 金库工厂地址非法 |
+
+### 6.1.1 BuybackVault（回购金库实例）
+
+| selector | 错误 | 触发场景 | 建议文案 |
+|---|---|---|---|
+| `0x0dc149f0` | AlreadyInitialized | 重复 initialize | 金库已初始化 |
+| `0xd92e233d` | ZeroAddress | token/pair/router/wbnb 为零 | 金库参数非法 |
+| `0x71be22cd` | InvalidBuybackMode | mode 不是 0/1 | 回购方式非法 |
+| `0x98c0d60a` | InvalidTriggerMode | trigger 不是 0/1/2 | 执行条件非法 |
+| `0x5fabb610` | InvalidInterval | 间隔超出 1…525600 分钟 | 回购间隔非法 |
+| `0xdfe2f5b1` | InvalidStartDelay | 时间模式未填延迟 / 余额模式未填 0 | 开始延迟非法 |
+| `0x9fad1177` | InvalidTriggerAmount | 时间模式非 0，或余额模式不是 1…1000 整 BNB | 触发金额非法 |
+| `0x0546dffa` | InvalidBuybackAmount | 每笔金额不是 0.001…10 BNB 或精度不对 | 回购金额非法 |
+| `0x354fd4f3` | InvalidCallerReward | 奖励 ≥ 每笔金额或 > 0.01 BNB | 调用奖励非法 |
+| `0xf4d678b8` | InsufficientBalance | 金库 BNB 不够一笔回购（或未达 triggerAmount） | 金库余额不足 |
+| `0x085de625` | TooEarly | 未到点或间隔未过 | 尚未到执行时间 |
+| `0x14d4a4e8` | OnlySelf | 外部直接调 lpBuybackAndBurn | — |
 
 ### 6.2 PRESALE（托管仓）
 
@@ -658,6 +718,8 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 | 函数 | 返回 | 用途 |
 |---|---|---|
 | `tokenPresales(token)` | address | 代币 → 托管仓地址 |
+| `tokenVaults(token)` | address | 代币 → 回购金库（未启用则为 `0x0`） |
+| `buybackVaultFactory()` | address | 金库工厂；`0x0` 表示尚未 `setBuybackVaultFactory` |
 | `presaleTokens(presale)` | address | 反查 |
 | `tokenCreators(token)` | address | 代币 → 创建者 |
 | `tokenConfigured(token)` | bool | 是否已配预售 |
@@ -703,6 +765,14 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 | `poolState()` | 打包读取（state/buyTax/sellTax/threshold/…），详情页一次拉 |
 | 标准 ERC20 + `permit()` | 转账/授权/签名授权 |
 
+### 8.4 BuybackVault（可选金库实例）
+
+| 函数 | 用途 |
+|---|---|
+| `canExecuteBuyback()` | 前端按钮是否可点 |
+| `getVaultStats()` | 余额、mode/trigger、下次可执行时间、累计买回/销毁、笔数 |
+| `executeBuyback()` | **任何人**可调：用户按钮、keeper、机器人；成功付 `callerReward` |
+
 ---
 
 ## 9. viem 快速上手
@@ -722,6 +792,8 @@ const wallet   = createWalletClient({ chain: bscTestnet, transport: custom(windo
 // ---------- ABI（parseAbi 人类可读形式，按需声明用到的条目即可） ----------
 const coordinatorAbi = parseAbi([
   "function createToken((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt) payable returns (address token, address presale)",
+  "function createTokenWithVault((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt, (uint8 mode, uint8 trigger, uint64 startDelayMinutes, uint64 intervalMinutes, uint256 triggerAmount, uint256 buybackAmount, uint256 callerReward) buyback) payable returns (address token, address presale, address vault)",
+  "function tokenVaults(address) view returns (address)",
   "function creationFee() view returns (uint256)",
   "function tokenPresales(address) view returns (address)",
   "event TokenPresalePairCreated(address indexed token, address indexed presale, address indexed creator, uint256 totalSupply)",
@@ -776,6 +848,22 @@ const hash = await wallet.writeContract({
 const rc = await client.waitForTransactionReceipt({ hash });
 const created = rc.logs.find(l => l.topic0 === "0xd82d53ac9fb3ce23bd37e0b97a838b1dd1a29249c5fc8044b050d2717bfe7ac6");
 // 解码 created.args 拿 token / presale 地址
+
+// ---------- ①b 发币 + 自动回购金库 ----------
+// 税金打入金库，忽略 feeRecipient。executeBuyback 由用户/机器人/keeper 调用。
+await wallet.writeContract({
+  address: COORDINATOR, abi: coordinatorAbi, functionName: "createTokenWithVault", account,
+  args: [{
+    name: "MyToken", symbol: "MTK", meta: "ipfs://Qm...",
+    buyTax: 200, sellTax: 300, feeRecipient: account, // 会被覆盖为 vault
+    taxDuration: 365n * 86400n, antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
+  }, salt, {
+    mode: 0, trigger: 0,              // Token 买毁 + 按时间
+    startDelayMinutes: 1n, intervalMinutes: 1n,
+    triggerAmount: 0n, buybackAmount: parseEther("0.015"), callerReward: parseEther("0.001"),
+  }],
+  value: fee,
+});
 
 // ---------- ② 一键领取（领取即上线） ----------
 const presaleAddr = await client.readContract({ address: COORDINATOR, abi: coordinatorAbi, functionName: "tokenPresales", args: [tokenAddr] });
