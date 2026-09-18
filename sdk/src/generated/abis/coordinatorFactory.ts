@@ -69,6 +69,19 @@ export const coordinatorFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "buybackVaultFactory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "createToken",
     "inputs": [
       {
@@ -137,6 +150,129 @@ export const coordinatorFactoryAbi = [
       },
       {
         "name": "presale",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "createTokenWithVault",
+    "inputs": [
+      {
+        "name": "tokenConfig",
+        "type": "tuple",
+        "internalType": "struct TokenConfig",
+        "components": [
+          {
+            "name": "name",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "meta",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "buyTax",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "sellTax",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "feeRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "taxDuration",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "antiFarmerDuration",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "liqExpectedOutputAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "buyback",
+        "type": "tuple",
+        "internalType": "struct BuybackConfig",
+        "components": [
+          {
+            "name": "mode",
+            "type": "uint8",
+            "internalType": "enum BuybackMode"
+          },
+          {
+            "name": "trigger",
+            "type": "uint8",
+            "internalType": "enum TriggerMode"
+          },
+          {
+            "name": "startDelayMinutes",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "intervalMinutes",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "triggerAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "buybackAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callerReward",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "presale",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "vault",
         "type": "address",
         "internalType": "address"
       }
@@ -715,6 +851,19 @@ export const coordinatorFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "setBuybackVaultFactory",
+    "inputs": [
+      {
+        "name": "factory",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setCreationFee",
     "inputs": [
       {
@@ -1005,6 +1154,25 @@ export const coordinatorFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "tokenVaults",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "totalPairsCreated",
     "inputs": [],
     "outputs": [
@@ -1044,6 +1212,50 @@ export const coordinatorFactoryAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BuybackVaultAttached",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "vault",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "mode",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "trigger",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BuybackVaultFactorySet",
+    "inputs": [
+      {
+        "name": "factory",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -1335,6 +1547,11 @@ export const coordinatorFactoryAbi = [
   },
   {
     "type": "error",
+    "name": "BuybackVaultFactoryNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "CreatorBuyTokensWithoutFunding",
     "inputs": []
   },
@@ -1437,6 +1654,11 @@ export const coordinatorFactoryAbi = [
   {
     "type": "error",
     "name": "WithdrawFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroBuybackVaultFactory",
     "inputs": []
   },
   {
