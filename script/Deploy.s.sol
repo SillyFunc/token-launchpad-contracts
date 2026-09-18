@@ -8,6 +8,8 @@ import {PRESALE} from "src/Presale.sol";
 import {TokenFactory} from "src/TokenFactory.sol";
 import {PresaleFactory} from "src/PresaleFactory.sol";
 import {CoordinatorFactory} from "src/CoordinatorFactory.sol";
+import {BuybackVault} from "src/BuybackVault.sol";
+import {BuybackVaultFactory} from "src/BuybackVaultFactory.sol";
 
 // PancakeSwap V2 Router — BSC mainnet.
 address constant ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
@@ -30,11 +32,17 @@ contract Deploy is Script {
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
 
+        BuybackVault buybackImpl = new BuybackVault();
+        BuybackVaultFactory buybackFactory = new BuybackVaultFactory(address(buybackImpl), address(coordinator));
+        coordinator.setBuybackVaultFactory(address(buybackFactory));
+
         console2.log("FlapTaxTokenV3 impl:", address(flapImpl));
         console2.log("TokenFactory:", address(tokenFactory));
         console2.log("PRESALE template:", address(presaleTemplate));
         console2.log("PresaleFactory:", address(presaleFactory));
         console2.log("CoordinatorFactory:", address(coordinator));
+        console2.log("BuybackVault impl:", address(buybackImpl));
+        console2.log("BuybackVaultFactory:", address(buybackFactory));
 
         vm.stopBroadcast();
 
@@ -44,6 +52,8 @@ contract Deploy is Script {
         vm.serializeAddress(deploymentKey, "tokenFactory", address(tokenFactory));
         vm.serializeAddress(deploymentKey, "presaleImplementation", address(presaleTemplate));
         vm.serializeAddress(deploymentKey, "presaleFactory", address(presaleFactory));
+        vm.serializeAddress(deploymentKey, "buybackVaultImplementation", address(buybackImpl));
+        vm.serializeAddress(deploymentKey, "buybackVaultFactory", address(buybackFactory));
         string memory deploymentJson = vm.serializeAddress(deploymentKey, "coordinatorFactory", address(coordinator));
 
         string memory deploymentDirectory = "script/deployments";

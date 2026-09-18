@@ -36,6 +36,16 @@ const ABI_CONTRACTS = [
     outputFile: "flapTaxTokenV3.ts",
     exportName: "flapTaxTokenV3Abi",
   },
+  {
+    artifactPath: "out/BuybackVault.sol/BuybackVault.json",
+    outputFile: "buybackVault.ts",
+    exportName: "buybackVaultAbi",
+  },
+  {
+    artifactPath: "out/BuybackVaultFactory.sol/BuybackVaultFactory.json",
+    outputFile: "buybackVaultFactory.ts",
+    exportName: "buybackVaultFactoryAbi",
+  },
 ] as const;
 
 const DEPLOYMENT_ADDRESS_FIELDS = [
