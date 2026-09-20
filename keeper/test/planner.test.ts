@@ -123,6 +123,39 @@ describe("execution planning", () => {
     await expect(buildExecutionPlan(database(anchors()), config, manipulated, "tax", 10_000)).resolves.toBeNull();
   });
 
+  it("ignores zero-reserve samples when building the historical anchor", async () => {
+    // 真实场景：代币先创建、后加池，加池前的样本储备为 0。它们不含价格信息，
+    // 若计入中位数会把锚点拉到 0，导致 Keeper 在已有足够有效样本时仍然不成交。
+    const zeroSamples: PairSample[] = [8_000, 8_100, 8_200, 8_300].map((sampledAt, index) => ({
+      blockNumber: BigInt(950 + index),
+      sampledAt,
+      reserveToken: 0n,
+      reserveWbnb: 0n,
+    }));
+    const plan = await buildExecutionPlan(database([...anchors(), ...zeroSamples]), config, snapshot(), "tax", 10_000);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.minimumOut).toBe(((plan?.currentQuote ?? 0n) * 9_900n) / 10_000n);
+  });
+
+  it("still refuses when fewer than the minimum meaningful samples exist", async () => {
+    const zeroSamples: PairSample[] = [7_800, 8_000, 8_200].map((sampledAt, index) => ({
+      blockNumber: BigInt(960 + index),
+      sampledAt,
+      reserveToken: 0n,
+      reserveWbnb: 0n,
+    }));
+    const plan = await buildExecutionPlan(
+      database([...anchors().slice(0, 2), ...zeroSamples]),
+      config,
+      snapshot(),
+      "tax",
+      10_000,
+    );
+
+    expect(plan).toBeNull();
+  });
+
   it("produces independent protected outputs for an LP buyback", async () => {
     const plan = await buildExecutionPlan(database(anchors()), config, snapshot({ vaultMode: 1 }), "buyback", 10_000);
 

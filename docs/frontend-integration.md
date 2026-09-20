@@ -4,7 +4,7 @@
 
 > 源码版本：**2026-09-20 BSC 测试网部署版**，包含异步税费清算、自动回购金库、Keeper 权限、配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池，以及 `refundTo` 合约钱包退款。
 > 部署验证：`broadcast/Deploy.s.sol/97/run-latest.json` 共 11 笔回执，全部 `status=0x1`；Router、工厂关联、Keeper/Admin 权限和七个地址的链上字节码均已独立读取核验。交易哈希见附录 A。
-> ⚠️ BscScan 源码发布与新部署端到端冒烟测试仍在进行中；不得引用下方“历史旧部署记录”作为本次部署证据。
+> ✅ 新部署端到端冒烟测试已完成：税费异步清算、BNB 入金库、自动回购与销毁均已在 BSC 测试网持续运行；证据见 `docs/keeper-cloudflare.md`。✅ BscScan 源码发布已完成（2026-09-20 逐合约核验，7 个合约均为 `already verified`）。不得引用下方“历史旧部署记录”作为本次部署证据。
 
 ---
 
@@ -995,7 +995,7 @@ try { ... } catch (e) {
 - `tokenFactory.flapImplementation == 0x52c0...57da`、`presaleFactory.presaleImplementation == 0x9B1c...C961`
 - **PRESALE 模板初始化锁生效：模板 owner == 0x1（占位初始化，任何人无法再 initialize 实现合约）**
 - `coordinator.routerAddress == tokenFactory.routerAddress == 0xD99D...50D1`
-- BscScan 源码发布：**待完成**；不得把链上字节码存在等同于源码验证
+- BscScan 源码发布：**已完成**（2026-09-20 逐合约核验，7 个测试网合约均为 `already verified`：`FlapTaxTokenV3` 实现 `0x52c0…57da`、`TokenFactory`、`PRESALE` 模板 `0x9B1c…C961`、`PresaleFactory`、`CoordinatorFactory`、`BuybackVault` 实现 `0x4390…D2FD`、`BuybackVaultFactory`）；仍不得把链上字节码存在等同于源码验证
 
 ### 历史旧部署冒烟记录（不可作为当前部署证据）
 
