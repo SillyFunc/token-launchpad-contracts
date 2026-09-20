@@ -45,11 +45,15 @@ error InvalidAllocation();
 error InvalidVanitySuffix();
 error BuybackVaultFactoryNotSet();
 error ZeroBuybackVaultFactory();
+error InvalidBuybackVaultFactory();
 
 // ============================================================================
 // CoordinatorFactory - 一站式发币编排（代币 + Pair + TaxProcessor + 托管仓）
 // ============================================================================
 contract CoordinatorFactory is AccessControl, ReentrancyGuard {
+    /// @notice 平台自动化执行者。仅负责触发税费处理与回购，不拥有资金管理权限。
+    bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+
     TokenFactory public tokenFactory;
     PresaleFactory public presaleFactory;
     address public routerAddress;
@@ -193,7 +197,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         token = bundle.token;
         if (token == address(0)) revert TokenCreationFailed();
 
-        address taxProcessor = address(new TaxProcessor());
+        address taxProcessor = address(new TaxProcessor(address(this)));
 
         IFlapTaxTokenV3(token).initialize(_buildInitParams(tokenConfig, bundle, taxProcessor));
 
@@ -381,6 +385,24 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     function setBuybackVaultFactory(address factory) external onlyAdmin {
         if (buybackVaultFactory != address(0)) revert AlreadyConfigured();
         if (factory == address(0)) revert ZeroBuybackVaultFactory();
+        if (factory.code.length == 0) revert InvalidBuybackVaultFactory();
+        BuybackVaultFactory candidate = BuybackVaultFactory(factory);
+        try candidate.keeperRegistry() returns (address registry) {
+            if (registry != address(this)) revert InvalidBuybackVaultFactory();
+        } catch {
+            revert InvalidBuybackVaultFactory();
+        }
+        bytes32 coordinatorRole;
+        try candidate.COORDINATOR_ROLE() returns (bytes32 role) {
+            coordinatorRole = role;
+        } catch {
+            revert InvalidBuybackVaultFactory();
+        }
+        try candidate.hasRole(coordinatorRole, address(this)) returns (bool authorized) {
+            if (!authorized) revert InvalidBuybackVaultFactory();
+        } catch {
+            revert InvalidBuybackVaultFactory();
+        }
         buybackVaultFactory = factory;
         emit BuybackVaultFactorySet(factory);
     }

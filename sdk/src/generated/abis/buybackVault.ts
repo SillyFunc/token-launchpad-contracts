@@ -51,7 +51,20 @@ export const buybackVaultAbi = [
   },
   {
     "type": "function",
-    "name": "DEADLINE_BUFFER",
+    "name": "KEEPER_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "LP_SWAP_BPS",
     "inputs": [],
     "outputs": [
       {
@@ -77,7 +90,7 @@ export const buybackVaultAbi = [
   },
   {
     "type": "function",
-    "name": "MAX_CALLER_REWARD",
+    "name": "MAX_BUYBACK_RESERVE_BPS",
     "inputs": [],
     "outputs": [
       {
@@ -90,7 +103,20 @@ export const buybackVaultAbi = [
   },
   {
     "type": "function",
-    "name": "MAX_INTERVAL_MINUTES",
+    "name": "MAX_DEADLINE_DELAY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_INTERVAL_SECONDS",
     "inputs": [],
     "outputs": [
       {
@@ -129,39 +155,13 @@ export const buybackVaultAbi = [
   },
   {
     "type": "function",
-    "name": "MIN_INTERVAL_MINUTES",
+    "name": "MIN_INTERVAL_SECONDS",
     "inputs": [],
     "outputs": [
       {
         "name": "",
         "type": "uint64",
         "internalType": "uint64"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MIN_TRIGGER_AMOUNT",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "SLIPPAGE_BPS",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -182,19 +182,6 @@ export const buybackVaultAbi = [
   {
     "type": "function",
     "name": "buybackCount",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "callerReward",
     "inputs": [],
     "outputs": [
       {
@@ -234,7 +221,23 @@ export const buybackVaultAbi = [
   {
     "type": "function",
     "name": "executeBuyback",
-    "inputs": [],
+    "inputs": [
+      {
+        "name": "minTokenOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minLpTokenOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "deadline",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -299,11 +302,6 @@ export const buybackVaultAbi = [
             "internalType": "uint64"
           },
           {
-            "name": "callerReward",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
             "name": "totalBuybackBNB",
             "type": "uint256",
             "internalType": "uint256"
@@ -358,6 +356,11 @@ export const buybackVaultAbi = [
         "internalType": "address"
       },
       {
+        "name": "keeperRegistry_",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "config",
         "type": "tuple",
         "internalType": "struct BuybackConfig",
@@ -373,12 +376,12 @@ export const buybackVaultAbi = [
             "internalType": "enum TriggerMode"
           },
           {
-            "name": "startDelayMinutes",
+            "name": "firstExecuteAt",
             "type": "uint64",
             "internalType": "uint64"
           },
           {
-            "name": "intervalMinutes",
+            "name": "intervalSeconds",
             "type": "uint64",
             "internalType": "uint64"
           },
@@ -389,11 +392,6 @@ export const buybackVaultAbi = [
           },
           {
             "name": "buybackAmount",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "callerReward",
             "type": "uint256",
             "internalType": "uint256"
           }
@@ -412,6 +410,19 @@ export const buybackVaultAbi = [
         "name": "",
         "type": "uint64",
         "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "keeperRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -437,6 +448,16 @@ export const buybackVaultAbi = [
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "minTokenOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "deadline",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "outputs": [],
@@ -503,6 +524,19 @@ export const buybackVaultAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "tokenIsToken0",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -652,7 +686,7 @@ export const buybackVaultAbi = [
         "internalType": "uint256"
       },
       {
-        "name": "tokensBurned",
+        "name": "tokensAdded",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -711,30 +745,8 @@ export const buybackVaultAbi = [
   },
   {
     "type": "error",
-    "name": "ApproveFailed",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "spender",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "ETHTransferFailed",
-    "inputs": [
-      {
-        "name": "to",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+    "name": "BuybackAmountExceedsReserveLimit",
+    "inputs": []
   },
   {
     "type": "error",
@@ -753,7 +765,12 @@ export const buybackVaultAbi = [
   },
   {
     "type": "error",
-    "name": "InvalidCallerReward",
+    "name": "InvalidExecutionDeadline",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidFirstExecuteTime",
     "inputs": []
   },
   {
@@ -763,7 +780,22 @@ export const buybackVaultAbi = [
   },
   {
     "type": "error",
-    "name": "InvalidStartDelay",
+    "name": "InvalidLpRatio",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidMinimumOutput",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPair",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPoolReserves",
     "inputs": []
   },
   {
@@ -801,6 +833,11 @@ export const buybackVaultAbi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedKeeper",
+    "inputs": []
   },
   {
     "type": "error",

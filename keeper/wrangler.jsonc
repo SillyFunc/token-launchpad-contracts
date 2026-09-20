@@ -1,0 +1,65 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sillyfunc-launchpad-keeper-testnet",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    "CHAIN_ID": "97",
+    "READ_RPC_URL": "https://bsc-testnet-rpc.publicnode.com",
+    "SEND_RPC_URL": "https://bsc-testnet-dataseed.bnbchain.org",
+    "COORDINATOR_ADDRESS": "0x9a7594114f4b79544f7CA00FBd1E902C556BbC47",
+    "KEEPER_ADDRESS": "0x9f87b1973361b23387D7F1b536484543a5ea1eFB",
+    "DISCOVERY_PAGE_SIZE": "8",
+    "MAX_ASSETS_PER_RUN": "8",
+    "CHECK_INTERVAL_SECONDS": "60",
+    "AMM_FEE_BPS": "25",
+    "TAX_MAX_RESERVE_BPS": "30",
+    "SLIPPAGE_BPS": "100",
+    "MAX_PRICE_DEVIATION_BPS": "300",
+    "ANCHOR_MIN_AGE_SECONDS": "300",
+    "ANCHOR_MAX_AGE_SECONDS": "3600",
+    "MIN_ANCHOR_SAMPLES": "3",
+    "DEADLINE_SECONDS": "300",
+    "GAS_PRICE_MULTIPLIER_BPS": "12000",
+    "MAX_GAS_PRICE_WEI": "10000000000",
+    "MIN_KEEPER_BALANCE_WEI": "3000000000000000",
+    "PENDING_RETRY_SECONDS": "90"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sillyfunc-launchpad-keeper-testnet",
+      "database_id": "cb08b9f9-7090-4d9e-83e4-b288e08a87e2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIGNER",
+        "class_name": "SignerDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SignerDurableObject"]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "sillyfunc-launchpad-keeper-testnet",
+      "binding": "KEEPER_WORKFLOW",
+      "class_name": "KeeperWorkflow"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

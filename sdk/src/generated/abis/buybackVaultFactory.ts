@@ -175,12 +175,12 @@ export const buybackVaultFactoryAbi = [
             "internalType": "enum TriggerMode"
           },
           {
-            "name": "startDelayMinutes",
+            "name": "firstExecuteAt",
             "type": "uint64",
             "internalType": "uint64"
           },
           {
-            "name": "intervalMinutes",
+            "name": "intervalSeconds",
             "type": "uint64",
             "internalType": "uint64"
           },
@@ -191,11 +191,6 @@ export const buybackVaultFactoryAbi = [
           },
           {
             "name": "buybackAmount",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "callerReward",
             "type": "uint256",
             "internalType": "uint256"
           }
@@ -220,6 +215,19 @@ export const buybackVaultFactoryAbi = [
         "name": "",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "keeperRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -375,6 +383,11 @@ export const buybackVaultFactoryAbi = [
   {
     "type": "error",
     "name": "UnknownVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroCoordinator",
     "inputs": []
   },
   {

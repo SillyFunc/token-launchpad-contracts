@@ -46,6 +46,11 @@ const ABI_CONTRACTS = [
     outputFile: "buybackVaultFactory.ts",
     exportName: "buybackVaultFactoryAbi",
   },
+  {
+    artifactPath: "out/TaxProcessor.sol/TaxProcessor.json",
+    outputFile: "taxProcessor.ts",
+    exportName: "taxProcessorAbi",
+  },
 ] as const;
 
 const DEPLOYMENT_ADDRESS_FIELDS = [
@@ -56,11 +61,15 @@ const DEPLOYMENT_ADDRESS_FIELDS = [
   "coordinatorFactory",
 ] as const;
 
+const OPTIONAL_DEPLOYMENT_ADDRESS_FIELDS = ["buybackVaultImplementation", "buybackVaultFactory"] as const;
+
 type DeploymentAddressField = (typeof DEPLOYMENT_ADDRESS_FIELDS)[number];
+type OptionalDeploymentAddressField = (typeof OPTIONAL_DEPLOYMENT_ADDRESS_FIELDS)[number];
 
 type Deployment = {
   chainId: number;
-} & Record<DeploymentAddressField, string>;
+} & Record<DeploymentAddressField, string> &
+  Partial<Record<OptionalDeploymentAddressField, string>>;
 
 function fail(message: string): never {
   throw new Error(`[contracts-sdk] ${message}`);
@@ -131,6 +140,18 @@ function parseDeployment(value: unknown, path: string, expectedChainId: number):
     deployment[field] = address;
   }
 
+  for (const field of OPTIONAL_DEPLOYMENT_ADDRESS_FIELDS) {
+    const address = value[field];
+    if (address === undefined) continue;
+    if (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
+      fail(`deployment file ${path} has an invalid EVM address in ${field}`);
+    }
+    if (/^0x0{40}$/.test(address)) {
+      fail(`deployment file ${path} uses the zero address in ${field}`);
+    }
+    deployment[field] = address;
+  }
+
   return deployment;
 }
 
@@ -168,11 +189,18 @@ async function readDeployments(): Promise<Deployment[]> {
 }
 
 function renderAddresses(deployments: readonly Deployment[]): string {
-  const rows = deployments.map(
-    (deployment) => `  ${deployment.chainId}: {
-${DEPLOYMENT_ADDRESS_FIELDS.map((field) => `    ${field}: ${JSON.stringify(deployment[field])},`).join("\n")}
-  },`,
-  );
+  const rows = deployments.map((deployment) => {
+    const required = DEPLOYMENT_ADDRESS_FIELDS.map(
+      (field) => `    ${field}: ${JSON.stringify(deployment[field])},`,
+    );
+    const optional = OPTIONAL_DEPLOYMENT_ADDRESS_FIELDS.flatMap((field) => {
+      const address = deployment[field];
+      return address === undefined ? [] : [`    ${field}: ${JSON.stringify(address)},`];
+    });
+    return `  ${deployment.chainId}: {
+${[...required, ...optional].join("\n")}
+  },`;
+  });
 
   return `${GENERATED_HEADER}export const addresses = {
 ${rows.join("\n")}
@@ -197,11 +225,20 @@ function renderContracts(deployments: readonly Deployment[]): string {
     presaleFactory: {
       address: ${JSON.stringify(deployment.presaleFactory)},
       abi: presaleFactoryAbi,
-    },
+    },${
+      deployment.buybackVaultFactory === undefined
+        ? ""
+        : `
+    buybackVaultFactory: {
+      address: ${JSON.stringify(deployment.buybackVaultFactory)},
+      abi: buybackVaultFactoryAbi,
+    },`
+    }
   },`,
   );
 
-  return `${GENERATED_HEADER}import { coordinatorFactoryAbi } from "./abis/coordinatorFactory.js";
+  return `${GENERATED_HEADER}import { buybackVaultFactoryAbi } from "./abis/buybackVaultFactory.js";
+import { coordinatorFactoryAbi } from "./abis/coordinatorFactory.js";
 import { presaleFactoryAbi } from "./abis/presaleFactory.js";
 import { tokenFactoryAbi } from "./abis/tokenFactory.js";
 

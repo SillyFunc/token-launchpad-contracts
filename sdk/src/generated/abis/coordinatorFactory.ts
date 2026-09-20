@@ -37,6 +37,19 @@ export const coordinatorFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "KEEPER_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "VANITY_SUFFIX",
     "inputs": [],
     "outputs": [
@@ -233,12 +246,12 @@ export const coordinatorFactoryAbi = [
             "internalType": "enum TriggerMode"
           },
           {
-            "name": "startDelayMinutes",
+            "name": "firstExecuteAt",
             "type": "uint64",
             "internalType": "uint64"
           },
           {
-            "name": "intervalMinutes",
+            "name": "intervalSeconds",
             "type": "uint64",
             "internalType": "uint64"
           },
@@ -249,11 +262,6 @@ export const coordinatorFactoryAbi = [
           },
           {
             "name": "buybackAmount",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "callerReward",
             "type": "uint256",
             "internalType": "uint256"
           }
@@ -1594,6 +1602,11 @@ export const coordinatorFactoryAbi = [
   {
     "type": "error",
     "name": "InvalidAllocation",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidBuybackVaultFactory",
     "inputs": []
   },
   {

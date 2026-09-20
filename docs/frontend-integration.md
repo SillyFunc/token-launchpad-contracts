@@ -2,10 +2,9 @@
 
 > 主网对接请使用 [主网专用文档](frontend-integration-mainnet.md)。两份文档的网络、部署地址和时间参数彼此独立维护。
 
-> 源码版本：**testnet 分支待部署安全修复版**（新增配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池、`refundTo` 合约钱包退款）。下列地址仍是当前链上旧部署；新版本部署并经 `broadcast/` 与链上核验后才能替换，前端在此之前不得把新 ABI 用于这些地址。
-> 部署验证：BscScan 源码验证 5/5 全绿 + 全场景链上冒烟测试通过（成功链路 / 硬顶自动结算 / 到期 force-end 三段 / 失败单出口 / 退款跨轮 / 72h 门禁 / 预留费），交易哈希见附录 A
-> ⚠️ **本节地址即当前链上旧部署**（97 链），不包含本分支安全修复。
-> ⚠️ 当前开发代码新增 `setPresaleConfig` 批量配置入口；本节所列旧部署在重新部署前不支持该 ABI。
+> 源码版本：**2026-09-20 BSC 测试网部署版**，包含异步税费清算、自动回购金库、Keeper 权限、配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池，以及 `refundTo` 合约钱包退款。
+> 部署验证：`broadcast/Deploy.s.sol/97/run-latest.json` 共 11 笔回执，全部 `status=0x1`；Router、工厂关联、Keeper/Admin 权限和七个地址的链上字节码均已独立读取核验。交易哈希见附录 A。
+> ⚠️ BscScan 源码发布与新部署端到端冒烟测试仍在进行中；不得引用下方“历史旧部署记录”作为本次部署证据。
 
 ---
 
@@ -36,16 +35,19 @@
 | RPC（WebSocket） | `wss://bsc-testnet-rpc.publicnode.com` |
 | 区块浏览器 | `https://testnet.bscscan.com` |
 
-### 1.2 本平台合约（当前链上部署，源码已验证）
+### 1.2 本平台合约（当前链上部署，接线已验证）
 
 | 合约 | 地址 | 前端是否直接交互 |
 |---|---|---|
-| **CoordinatorFactory（唯一入口）** | `0x4d2B161095f6B2A88832eae8FA07aeF8C1E1Be7c` | ✅ 主要交互对象 |
-| FlapTaxTokenV3 实现（模板） | `0xf6F1Ca2741AC526d74696dDbD8ADba4cc9064329` | ❌ 仅克隆实现，不直接调用 |
-| TokenFactory | `0x9AF920a4556419b544cFEb41F71672174827290F` | ❌ 由 Coordinator 调度 |
-| PRESALE 模板 | `0xA961A6C6131a4E00267dAc75880364762E886B9A` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
-| PresaleFactory | `0x23095009C1C912615d3707d5BE9a28f0220d8684` | ❌ 由 Coordinator 调度 |
-| BuybackVault 实现 / BuybackVaultFactory | **尚未随当前链上旧部署发布** | 金库实例由 `createTokenWithVault` 克隆；地址以重新部署后的 `broadcast/` 为准 |
+| **CoordinatorFactory（唯一入口）** | `0x9a7594114f4b79544f7CA00FBd1E902C556BbC47` | ✅ 主要交互对象 |
+| FlapTaxTokenV3 实现（模板） | `0x52c01A724b80d2E408131466802ec05FeB5557da` | ❌ 仅克隆实现，不直接调用 |
+| TokenFactory | `0xfE39e0fe0CbE1c2A042c337880161B9aeF2D2Eb9` | ❌ 由 Coordinator 调度 |
+| PRESALE 模板 | `0x9B1c041844e2334478DC1135cd051A3CbC3bC961` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
+| PresaleFactory | `0xd2E0861A80C4a3b0bdf501251Ee397476437138c` | ❌ 由 Coordinator 调度 |
+| BuybackVault 实现（模板） | `0x4390656F8560Df63E3551A32eac6c97e1F36D2FD` | ❌ 仅克隆实现，不直接调用 |
+| BuybackVaultFactory | `0xf1bD2178266aa91270c888808f71a842cdE037fC` | ❌ 由 Coordinator 调度；金库实例由 `createTokenWithVault` 创建 |
+
+`TaxProcessor` 是每个代币初始化时独立部署/绑定的处理器，不存在一个可写入本表的全局单例地址。
 
 ### 1.3 第三方合约（PancakeSwap V2 测试网）
 
@@ -99,7 +101,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 
 ```
 ① coordinator.createToken(config, salt)      创建者，payable ≥ creationFee
-      └→ 链上自动：克隆代币 + 建立/复用 canonical Pair + 部署 TaxProcessor + 建托管仓
+      └→ 链上自动：克隆代币 + 建立/复用 canonical Pair + 部署异步 TaxProcessor + 建托管仓
          全量代币入托管仓，token 所有权 → 托管仓，托管仓所有权 → 创建者
          （salt 必为搜好的 8888 靓号盐，见 2.4；地址尾号强制 8888）
          可选：`createTokenWithVault(config, salt, buyback)` 税金改打入自动回购金库（见 3.1.1）
@@ -214,7 +216,7 @@ struct TokenConfig {
 
 ### 3.1.1 自动回购金库（可选）
 
-`createToken` 行为不变：税金打到 `feeRecipient`（钱包）。
+`createToken` 的最终收款人仍是 `feeRecipient`（钱包）；区别是税代币先进入每个代币独立的 `TaxProcessor` 排队，再由平台 keeper 安全兑换后转给该钱包。启用金库时，最终收款人改为金库。
 
 要启用金库，改调：
 
@@ -235,19 +237,38 @@ enum TriggerMode { Time, Balance, TimeAndBalance }   // 0 按时间 / 1 按余�
 struct BuybackConfig {
     BuybackMode mode;
     TriggerMode trigger;
-    uint64  startDelayMinutes;  // 模式 1 必须 0；模式 0/2 为 1…525600
-    uint64  intervalMinutes;    // 1…525600（1 分钟…365 天）
-    uint256 triggerAmount;      // 模式 0 必须 0；模式 1/2 为 1…1000 * 1e18，且必须是整 BNB
+    uint64  firstExecuteAt;     // Unix 秒；模式 1 必须 0，模式 0/2 必须至少晚于创建上链时间 60 秒
+    uint64  intervalSeconds;    // 60…31536000 秒（1 分钟…365 天）
+    uint256 triggerAmount;      // 模式 0 必须 0；模式 1/2 必须 >= buybackAmount 且 <= 1000 BNB
     uint256 buybackAmount;      // 0.001…10 BNB（wei），必须是 0.001 BNB 的整数倍
-    uint256 callerReward;       // 成功执行付给调用者的 BNB，可为 0；须 < buybackAmount 且 ≤ 0.01 BNB
 }
 ```
 
-**`executeBuyback()` 谁来调：** 公开函数，任何人可调——前端「立即回购」按钮、平台 keeper、第三方机器人。条件满足才成功，并支付 `callerReward`。不要在清算/`receive` 里自动回购。金库**没有**创建者提款入口。
+三个执行条件对应的入参：
 
-触发金额 `triggerAmount` ≠ 每笔花费 `buybackAmount`。例如门槛 1 BNB、每笔 0.015 BNB：攒到 1 BNB 才开始，每次只花 0.015。
+| UI 选项 | `trigger` | `firstExecuteAt` | `triggerAmount` | 首次执行条件 |
+|---|---:|---:|---:|---|
+| 时间 | `0` | 用户选择时间的 Unix 秒 | `0` | 到达所选时间 |
+| 金库余额 | `1` | `0` | 用户输入的 BNB wei | 余额达到门槛，可立即首次执行 |
+| 时间 + 金库余额 | `2` | 用户选择时间的 Unix 秒 | 用户输入的 BNB wei | 时间与余额同时满足 |
 
-LP 路径若 `addLiquidityETH` 失败，同笔原子回退为 Token 买毁。
+前端显示的 `UTC+8` 只是日期组件的展示时区；提交合约时必须转换为同一个绝对 Unix 时间戳，不能提交“延迟几分钟”。分钟/小时/天选项同样由前端统一换算为 `intervalSeconds`。交易实际上链时，时间模式的 `firstExecuteAt` 仍须至少晚于当时区块时间 60 秒，前端应为钱包确认和打包留出余量。
+
+**keeper 执行链：**
+
+1. 代币达到清算阈值时，只把税代币归集到 `token.taxProcessor()`，不在用户卖出交易中嵌套 swap。
+2. keeper 读取 `pendingTaxTokens()`，调用 `processPendingTax(amountIn, minQuoteOut, deadline)` 分批换成 WBNB/BNB；失败整笔回滚，原始税代币留在处理器等待重试。
+3. 若该币启用了金库，BNB 到账后 keeper 在条件满足时调用 `executeBuyback(minTokenOut, minLpTokenOut, deadline)`。
+
+上述两个 keeper 入口都要求 `deadline` 介于当前区块时间和未来 10 分钟之间，最低输出不得为 0。最低输出应由独立报价/TWAP 或可信报价服务计算，并通过私有或 MEV 保护 RPC 发送；不要直接信任待执行池在同一时刻的单点储备报价。`minTokenOut` 用于 Token 买毁以及 LP 失败后的 Token 兜底，`minLpTokenOut` 用于 LP 路径的半仓买入。
+
+仅 `CoordinatorFactory.KEEPER_ROLE()` 授权的平台 keeper 可调用这两个入口。前端只读取状态，不向普通用户展示执行按钮。keeper 只负责触发并自行承担 gas，不接收金库奖励；时间、余额、间隔、池储备上限和最低输出仍由链上复核。金库**没有**创建者提款入口。
+
+部署每个环境时必须通过 `KEEPER_ADDRESS` 提供独立 keeper 钱包，并由部署脚本向 Coordinator 授予角色。管理员可通过 OZ `grantRole` / `revokeRole` 轮换 keeper，既有金库会动态读取最新角色，无需逐个更新。
+
+触发金额 `triggerAmount` ≠ 每笔花费 `buybackAmount`。例如门槛 0.5 BNB、每笔 0.015 BNB：攒到 0.5 BNB 才开始，每次最多使用 0.015。门槛支持 wei 精度，不要求整 BNB，但不能低于单笔花费。执行时 `buybackAmount` 还必须不超过池中 WBNB 储备的 1%；否则等待流动性增加或重新部署更小配置，避免单笔异常价格冲击。
+
+LP 路径按实际到账代币（含买税、卖税影响）和 Pair 当前储备直接配比铸 LP，LP 直接发送到 `0xdead`。实际配比可能少花少量 BNB，剩余 BNB 留在金库，`totalBuybackBNB` 只统计真实花费；配比或 mint 失败时整条 LP 子调用回滚，并在同笔交易中回退为 Token 买毁。
 
 ### 3.2 `PresaleConfig`（预售配置，11 字段，仅 `setupPresale` 一次性生效）
 
@@ -385,6 +406,12 @@ owner=托管仓              owner=0x0（出口交易内自动 renounce）
 |---|---|---|
 | `TokenPresalePairCreated(address,address,address,uint256)` | `0xd82d53ac9fb3ce23bd37e0b97a838b1dd1a29249c5fc8044b050d2717bfe7ac6` | 新代币上架（coordinator 上监听，全量列表增量维护） |
 | `BuybackVaultAttached(address,address,uint8,uint8)` | `0x96c777e9590576a88dc65a7cfa56c61acc786fd14823ef67c4429b5e01955f0e` | 发币启用金库（coordinator；indexed token/vault，mode/trigger 非 indexed） |
+| `TaxQueued(uint256,uint256)` | `0xcc7d936ff0d73f6d7f23fa8104c81af5d813680fed97bd0e88c2a6427f8bc2c9` | 税代币进入异步处理队列；第二项为处理器当前待处理余额 |
+| `TaxProcessed(uint256,uint256,int8)` | `0x5760b91c5d789e04098d5e5aea46a2876071ec18bb1cc10ab87d626fde2daa5c` | keeper 成功清算税代币；含输入、实际 quote 输出和延迟方向信号 |
+| `TaxForwarded(address,uint256,bool)` | `0x2f0deb69046c0268f275a9767fe194d802ed2f83e38e3510760400629c259e6a` | quote 已转给最终钱包/金库；`isNative` 区分 BNB 与 WBNB |
+| `TokenBuybackExecuted(address,uint256,uint256)` | `0x346de09d3ecb42b7215032cb7a980cd7397a2f9b600e5d1dfa99c4654e8f2266` | Token 买毁成功；记录 keeper、实际 BNB 花费与销毁量 |
+| `LpBuybackExecuted(address,uint256,uint256,uint256)` | `0xff837dcc2bd23a48fd0526bdf0d5016126da407dda8cae5972b16a3e0b910187` | LP 买毁成功；记录实际 BNB 花费、LP 销毁量与实际加池代币量 |
+| `BuybackFallbackToToken(uint256)` | `0xa3a23cde9701ac059fce0720843d729a881d3ebeefcf4b29f7967cbd0f7000cf` | LP 子路径失败，已原子回滚并尝试 Token 买毁 |
 | `TokenCreated(address,address,address)` | `0xb5a149b73151b44553ff737ca050c61de65038e2ae67ec044215d3261cc6fa00` | TokenFactory 创建代币；第二个 indexed 参数为实际创建者（含智能钱包，不使用 tx.origin） |
 | `PresaleCreated(address,address)` | `0xcfea6066a7ff70439f7cfe020aea9709cf4b7cb462225660895dfcc5c38716ae` | PresaleFactory 克隆创建；第二个 indexed 参数为实际代币创建者（非 Coordinator） |
 | `AllocationUpdated(uint256,uint256,uint256)` | `0x21c55dfccedf7a8f464081b4c32abf493ebe4c9a653d37fd29365b3775a79cfd` | 分配比例变更（coordinator 上监听，变更后更新本地缓存的比例展示） |
@@ -570,23 +597,41 @@ await wallet.writeContract({
 | `0x0baf7432` | InvalidAllocation | setAllocation 比例含 0 项或三项之和 ≠ 10000 bps | 分配比例配置非法 |
 | `0x2f64614a` | BuybackVaultFactoryNotSet | 未配置金库工厂就调 createTokenWithVault | 金库功能尚未启用 |
 | `0xe227113d` | ZeroBuybackVaultFactory | setBuybackVaultFactory(0) | 金库工厂地址非法 |
+| `0x7edd4156` | InvalidBuybackVaultFactory | 工厂无代码、keeperRegistry 不匹配或未授权 Coordinator | 金库工厂配置不匹配 |
 
 ### 6.1.1 BuybackVault（回购金库实例）
 
 | selector | 错误 | 触发场景 | 建议文案 |
 |---|---|---|---|
 | `0x0dc149f0` | AlreadyInitialized | 重复 initialize | 金库已初始化 |
-| `0xd92e233d` | ZeroAddress | token/pair/router/wbnb 为零 | 金库参数非法 |
+| `0xd92e233d` | ZeroAddress | token/pair/router/wbnb/keeperRegistry 为零 | 金库参数非法 |
 | `0x71be22cd` | InvalidBuybackMode | mode 不是 0/1 | 回购方式非法 |
 | `0x98c0d60a` | InvalidTriggerMode | trigger 不是 0/1/2 | 执行条件非法 |
-| `0x5fabb610` | InvalidInterval | 间隔超出 1…525600 分钟 | 回购间隔非法 |
-| `0xdfe2f5b1` | InvalidStartDelay | 时间模式未填延迟 / 余额模式未填 0 | 开始延迟非法 |
-| `0x9fad1177` | InvalidTriggerAmount | 时间模式非 0，或余额模式不是 1…1000 整 BNB | 触发金额非法 |
+| `0x5fabb610` | InvalidInterval | 间隔超出 60…31536000 秒 | 回购间隔非法 |
+| `0x85b63d4d` | InvalidFirstExecuteTime | 时间模式的首次时间不足 60 秒余量，或余额模式未填 0 | 首次执行时间非法 |
+| `0x9fad1177` | InvalidTriggerAmount | 时间模式非 0，或余额门槛低于单笔花费/超过 1000 BNB | 触发金额非法 |
 | `0x0546dffa` | InvalidBuybackAmount | 每笔金额不是 0.001…10 BNB 或精度不对 | 回购金额非法 |
-| `0x354fd4f3` | InvalidCallerReward | 奖励 ≥ 每笔金额或 > 0.01 BNB | 调用奖励非法 |
+| `0x77b14347` | UnauthorizedKeeper | 非平台 keeper 调用 executeBuyback | 仅平台自动化服务可执行回购 |
+| `0x1e4f7d8c` | InvalidPair | Pair 不是配置 token/WBNB 的 canonical pair | 金库交易对非法 |
+| `0x1847d59a` | InvalidMinimumOutput | keeper 提交的必要最低输出为 0，或实际到账不足 | 最低到账量非法 |
+| `0xa165e10e` | InvalidExecutionDeadline | deadline 已过期或超过未来 10 分钟 | 执行请求已过期 |
+| `0xe16cc7d1` | InvalidPoolReserves | Pair 尚无双边储备 | 交易池尚无流动性 |
+| `0xaf70131e` | BuybackAmountExceedsReserveLimit | 单笔金额超过 WBNB 储备的 1% | 当前流动性不足以安全回购 |
+| `0x943d02f8` | InvalidLpRatio | 实际到账资产无法在本次预算内安全配比，LP 子路径回滚 | 已自动改走 Token 回购 |
 | `0xf4d678b8` | InsufficientBalance | 金库 BNB 不够一笔回购（或未达 triggerAmount） | 金库余额不足 |
 | `0x085de625` | TooEarly | 未到点或间隔未过 | 尚未到执行时间 |
 | `0x14d4a4e8` | OnlySelf | 外部直接调 lpBuybackAndBurn | — |
+
+### 6.1.2 TaxProcessor（每个代币独立实例）
+
+| selector | 错误 | 触发场景 | keeper 处理 |
+|---|---|---|---|
+| `0xe53e8015` | UnauthorizedTaxKeeper | 未授权地址调用 `processPendingTax` | 检查 Coordinator 的 `KEEPER_ROLE` |
+| `0x6df23ac6` | InvalidTaxAmount | amountIn 为 0 或超过待处理税代币余额 | 重新读取 `pendingTaxTokens()` |
+| `0x468d027b` | UnsafeMinQuoteOut | minQuoteOut 为 0 | 使用可信报价计算非零下限 |
+| `0xc88f5e72` | InvalidProcessingDeadline | deadline 已过期或超过未来 10 分钟 | 刷新报价和 deadline 后重发 |
+| `0x18ebbca1` | QuoteTokenUnavailable | Router 的 WBNB/quote 配置不可用 | 停止任务并检查部署配置 |
+| `0xe87caf26` | InsufficientQuoteOutput | 实际 quote 到账低于下限 | 资金未变化；刷新报价后重试 |
 
 ### 6.2 PRESALE（托管仓）
 
@@ -769,9 +814,19 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 | 函数 | 用途 |
 |---|---|
-| `canExecuteBuyback()` | 前端按钮是否可点 |
+| `canExecuteBuyback()` | 是否已满足自动执行条件（前端状态展示） |
 | `getVaultStats()` | 余额、mode/trigger、下次可执行时间、累计买回/销毁、笔数 |
-| `executeBuyback()` | **任何人**可调：用户按钮、keeper、机器人；成功付 `callerReward` |
+| `executeBuyback(minTokenOut, minLpTokenOut, deadline)` | 仅平台 keeper 可调；普通用户只读取状态 |
+
+### 8.5 TaxProcessor（通过 `token.taxProcessor()` 获取）
+
+| 函数 | 用途 |
+|---|---|
+| `pendingTaxTokens()` | 尚未清算的税代币余额 |
+| `processPendingTax(amountIn, minQuoteOut, deadline)` | keeper 分批清算；失败不改变原始资产 |
+| `pendingDirection()` | 最近一次清算生成、等待下一轮代币归集消费的阈值方向信号 |
+| `feeReceiver()` | 最终税费收款人；普通模式为钱包，金库模式为 vault |
+| `requiresMEVProtection()` | 恒为 `true`；keeper 必须使用受保护发送通道 |
 
 ---
 
@@ -783,7 +838,7 @@ import { bscTestnet } from "viem/chains";
 
 const RPC  = "https://bsc-testnet-rpc.publicnode.com";
 const WSRPC = "wss://bsc-testnet-rpc.publicnode.com";
-const COORDINATOR = "0x4d2B161095f6B2A88832eae8FA07aeF8C1E1Be7c";
+const COORDINATOR = "0x9a7594114f4b79544f7CA00FBd1E902C556BbC47";
 
 const client   = createPublicClient({ chain: bscTestnet, transport: http(RPC) });
 const wsClient = createPublicClient({ chain: bscTestnet, transport: webSocket(WSRPC) });
@@ -792,7 +847,7 @@ const wallet   = createWalletClient({ chain: bscTestnet, transport: custom(windo
 // ---------- ABI（parseAbi 人类可读形式，按需声明用到的条目即可） ----------
 const coordinatorAbi = parseAbi([
   "function createToken((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt) payable returns (address token, address presale)",
-  "function createTokenWithVault((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt, (uint8 mode, uint8 trigger, uint64 startDelayMinutes, uint64 intervalMinutes, uint256 triggerAmount, uint256 buybackAmount, uint256 callerReward) buyback) payable returns (address token, address presale, address vault)",
+  "function createTokenWithVault((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt, (uint8 mode, uint8 trigger, uint64 firstExecuteAt, uint64 intervalSeconds, uint256 triggerAmount, uint256 buybackAmount) buyback) payable returns (address token, address presale, address vault)",
   "function tokenVaults(address) view returns (address)",
   "function creationFee() view returns (uint256)",
   "function tokenPresales(address) view returns (address)",
@@ -815,13 +870,25 @@ const pairAbi = parseAbi([
   "function getReserves() view returns (uint112, uint112, uint32)",
   "event Sync(uint112 reserve0, uint112 reserve1)",
 ]);
-const tokenAbi = parseAbi(["function totalSupply() view returns (uint256)"]);
+const tokenAbi = parseAbi([
+  "function totalSupply() view returns (uint256)",
+  "function taxProcessor() view returns (address)",
+]);
+const taxProcessorAbi = parseAbi([
+  "function pendingTaxTokens() view returns (uint256)",
+  "function processPendingTax(uint256 amountIn, uint256 minQuoteOut, uint64 deadline) returns (uint256 out)",
+  "function requiresMEVProtection() view returns (bool)",
+]);
+const buybackVaultAbi = parseAbi([
+  "function canExecuteBuyback() view returns (bool)",
+  "function executeBuyback(uint256 minTokenOut, uint256 minLpTokenOut, uint64 deadline)",
+]);
 
 // ---------- ① 发币（纯发币模式） ----------
 // 8888-only 体系：salt 必须是"搜好的尾号 8888 盐"（零盐/非 8888 盐直接 revert，
 // 见 2.4）。最小可行搜盐示例（生产建议 Web Worker 内跑并带随机种子派生）：
-const TOKEN_FACTORY = "0x9AF920a4556419b544cFEb41F71672174827290F";
-const IMPL = "0xf6F1Ca2741AC526d74696dDbD8ADba4cc9064329"; // tokenFactory.flapImplementation()
+const TOKEN_FACTORY = "0xfE39e0fe0CbE1c2A042c337880161B9aeF2D2Eb9";
+const IMPL = "0x52c01A724b80d2E408131466802ec05FeB5557da"; // tokenFactory.flapImplementation()
 const INIT_CODE = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73"
   + IMPL.toLowerCase().slice(2) + "5af43d82803e903d91602b57fd5bf3";
 function predict(salt: bigint) {                       // EIP-1014 / EIP-1167
@@ -850,7 +917,7 @@ const created = rc.logs.find(l => l.topic0 === "0xd82d53ac9fb3ce23bd37e0b97a838b
 // 解码 created.args 拿 token / presale 地址
 
 // ---------- ①b 发币 + 自动回购金库 ----------
-// 税金打入金库，忽略 feeRecipient。executeBuyback 由用户/机器人/keeper 调用。
+// 税金经 keeper 异步清算后打入金库，忽略 feeRecipient。回购同样仅由平台 keeper 调用。
 await wallet.writeContract({
   address: COORDINATOR, abi: coordinatorAbi, functionName: "createTokenWithVault", account,
   args: [{
@@ -859,8 +926,10 @@ await wallet.writeContract({
     taxDuration: 365n * 86400n, antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
   }, salt, {
     mode: 0, trigger: 0,              // Token 买毁 + 按时间
-    startDelayMinutes: 1n, intervalMinutes: 1n,
-    triggerAmount: 0n, buybackAmount: parseEther("0.015"), callerReward: parseEther("0.001"),
+    // UI 显示 2026-09-19 16:06 (UTC+8)，提交绝对 Unix 秒
+    firstExecuteAt: BigInt(Math.floor(new Date("2026-09-19T16:06:00+08:00").getTime() / 1000)),
+    intervalSeconds: 60n,             // UI 的 1 分钟
+    triggerAmount: 0n, buybackAmount: parseEther("0.015"),
   }],
   value: fee,
 });
@@ -902,26 +971,37 @@ try { ... } catch (e) {
 
 ## 附录 A：部署核验记录（当前部署）
 
-**部署交易**：`forge script script/Deploy.s.sol --rpc-url bsc-testnet --broadcast --verify --private-key <deployer>`（broadcast 产物 `broadcast/Deploy.s.sol/97/run-latest.json`），部署者 `0x463c...21D3`，7 笔交易全部上链成功（5 笔 CREATE + 2 笔角色授权），BscScan 源码验证 5/5 `Pass - Verified`：
+**部署交易**：`forge script script/Deploy.s.sol:Deploy --rpc-url <BSC testnet RPC> --sender <deployer> --interactive --legacy --broadcast --slow`。权威广播产物为 `broadcast/Deploy.s.sol/97/run-latest.json`，部署者 `0x463c...21D3`。2026-09-20 共 11 笔交易全部成功（7 笔 CREATE + 4 笔配置/授权）：
 
-| 合约 | 部署交易 | 地址 | BscScan 验证 |
+| 操作 | 交易 | 地址/目标 | 回执 |
 |---|---|---|---|
-| FlapTaxTokenV3 impl | `0xd6e59705feb802dd8bcb96e2381e67984422f79f6ed5c523f6107be0ed61ec77` | `0xf6F1Ca2741AC526d74696dDbD8ADba4cc9064329` | ✅ Pass |
-| TokenFactory | `0xffe95b0a55b5abf441e0cb72c2875ff4009726f2805bb17a64287ee91b95c3bc` | `0x9AF920a4556419b544cFEb41F71672174827290F` | ✅ Pass |
-| PRESALE template | `0x151626fa8a3dfed5fae17d37ae2bbb871ec3bb85dd5077dd6939d3d74e94dca6` | `0xA961A6C6131a4E00267dAc75880364762E886B9A` | ✅ Pass |
-| PresaleFactory | `0xb33ba181f9a4fb2d28f5c70012afbedb5bf530d98c4eae8ef6c82b9b056df5bb` | `0x23095009C1C912615d3707d5BE9a28f0220d8684` | ✅ Pass |
-| CoordinatorFactory | `0x3116eceffa3f9f3e710d3d941ddbff69df1c357329097b860ea66d1ca44a50d0` | `0x4d2B161095f6B2A88832eae8FA07aeF8C1E1Be7c` | ✅ Pass |
-| TokenFactory 授权 | `0x527234ded669d704cf46860863df837f489c5726e54618cd3805ff26270fdc9e` | — | — |
-| PresaleFactory 授权 | `0x8fd16f799e8530e28b512c651a61a4df5266c534a2bb76314bb133cc98705a88` | — | — |
+| 部署 FlapTaxTokenV3 实现 | `0x7e7cc81a0a72bfd2d834d94a0d688f4b087612f3d697b009159fcb67c17ed84e` | `0x52c01A724b80d2E408131466802ec05FeB5557da` | ✅ `0x1` |
+| 部署 TokenFactory | `0x6d4043356f9cf25beb0fe4a9ab2e254e7bdf166f3cb3279e0bb2e78f1f1ef561` | `0xfE39e0fe0CbE1c2A042c337880161B9aeF2D2Eb9` | ✅ `0x1` |
+| 部署 PRESALE 模板 | `0x80d09c8b395d0aa15f32c6b6d4f2fd7207e04c0a252d7ab6b88c0236351616d5` | `0x9B1c041844e2334478DC1135cd051A3CbC3bC961` | ✅ `0x1` |
+| 部署 PresaleFactory | `0xd4e877e5fba4cd868c41e932ea372f1b94785a3801642342fcddfb66d946d1c7` | `0xd2E0861A80C4a3b0bdf501251Ee397476437138c` | ✅ `0x1` |
+| 部署 CoordinatorFactory | `0xb1f5c39af2c893911e46732c64a602cf330f96fdc8864eb9a131a7bbab333965` | `0x9a7594114f4b79544f7CA00FBd1E902C556BbC47` | ✅ `0x1` |
+| 授予 Keeper 权限 | `0x62eee5e21619f0261c346bd17ce8321d96e2921217427e0bf69f87b9c22d8f8d` | `0x9f87...1eFB` | ✅ `0x1` |
+| TokenFactory 授予 Coordinator 权限 | `0xa4d915e82f4caf1544f1e5fc5ba6bd57168866c1423f92294f5735d6fd2783bf` | Coordinator | ✅ `0x1` |
+| PresaleFactory 授予 Coordinator 权限 | `0x4b5ae76710654c071e10a643365a8c10729ecaac10bce144ebe120cd6e394729` | Coordinator | ✅ `0x1` |
+| 部署 BuybackVault 实现 | `0xccc365c22689c0c3f33b6156f72affaf3d922f0db3cb2879db0f4c13cb96b106` | `0x4390656F8560Df63E3551A32eac6c97e1F36D2FD` | ✅ `0x1` |
+| 部署 BuybackVaultFactory | `0x4e50f82f6fc671eab630f19bee724c953ac70d5750c8d70a9c76267f925a7e8c` | `0xf1bD2178266aa91270c888808f71a842cdE037fC` | ✅ `0x1` |
+| Coordinator 绑定 BuybackVaultFactory | `0xda847f03c43440db18c243c75ce778271a1d17b92b30ab3a8fd46c771a79a5f5` | Coordinator | ✅ `0x1` |
 
 **接线核验（全通过）**：
-- 5 合约源码验证 5/5 `Pass - Verified`（Etherscan V2 API，chain 97）
-- 两工厂 `hasRole(COORDINATOR_ROLE, coordinator) == true`
-- `tokenFactory.flapImplementation == 0xf6F1...6329`、`presaleFactory.presaleImplementation == 0xA961...6B9A`
+- 七个部署地址均存在非空链上字节码；11/11 广播回执成功
+- TokenFactory、PresaleFactory、BuybackVaultFactory 均满足 `hasRole(COORDINATOR_ROLE, coordinator) == true`
+- `hasRole(KEEPER_ROLE, 0x9f87...1eFB) == true`、Keeper 的 `DEFAULT_ADMIN_ROLE == false`、部署者的 `DEFAULT_ADMIN_ROLE == true`
+- `buybackVaultFactory.keeperRegistry == coordinator`，且 Coordinator 保存的金库工厂地址一致
+- `tokenFactory.flapImplementation == 0x52c0...57da`、`presaleFactory.presaleImplementation == 0x9B1c...C961`
 - **PRESALE 模板初始化锁生效：模板 owner == 0x1（占位初始化，任何人无法再 initialize 实现合约）**
-- `coordinator.routerAddress == 0xD99D...50D1`、`creationFee == 0.005 BNB`、**`reservationFee == 0.001 BNB`（新费率已上链）**、`factoryEnabled == true`
+- `coordinator.routerAddress == tokenFactory.routerAddress == 0xD99D...50D1`
+- BscScan 源码发布：**待完成**；不得把链上字节码存在等同于源码验证
 
-**冒烟测试（当前部署全场景端到端，全部通过）**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包 `0x463c...21D3`，非 owner 非参与者）。所有测试币地址尾号 8888（CREATE2 靓号体系验证）：
+### 历史旧部署冒烟记录（不可作为当前部署证据）
+
+以下记录来自被本次部署替换的旧测试网合约，仅保留作历史业务参考。当前部署必须重新完成创建金库币、税费累积、Keeper 清算、Token/LP 回购及故障恢复验收。
+
+**历史冒烟测试**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包 `0x463c...21D3`，非 owner 非参与者）。所有测试币地址尾号 8888：
 
 | # | 场景 | 关键交易 | 验证点（全部符合预期） |
 |---|---|---|---|

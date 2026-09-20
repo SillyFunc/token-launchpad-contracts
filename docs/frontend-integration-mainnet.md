@@ -19,7 +19,7 @@
 | CoordinatorFactory | [`0xc7284F96716E4FbB3f794Cb407D882C29AA653B1`](https://bscscan.com/address/0xc7284F96716E4FbB3f794Cb407D882C29AA653B1) |
 | PRESALE 模板 | [`0x6b51064D62018De9832590f1788078bDFB64Aca5`](https://bscscan.com/address/0x6b51064D62018De9832590f1788078bDFB64Aca5) |
 | FlapTaxTokenV3 模板 | [`0xd7E12Ecd6406B993D94F0bc67a4a62681f50aA99`](https://bscscan.com/address/0xd7E12Ecd6406B993D94F0bc67a4a62681f50aA99) |
-| BuybackVault / Factory | **当前这次主网部署尚未包含**。接口见测试网文档 §3.1.1；地址必须等新一次 `Deploy.s.sol` 广播并链上核验后再写入，禁止手抄。 |
+| BuybackVault / Factory | **当前这次主网部署尚未包含**。接口见测试网文档 §3.1.1；地址必须等新一次 `Deploy.s.sol` 广播并链上核验后再写入，禁止手抄。新版本同时把 TaxProcessor 改为 keeper 异步清算；本表现有地址仍是旧 ABI/旧行为，不得绑定新 SDK ABI。 |
 
 Pancake Router 与 WBNB 不应由前端硬编码：读取已部署
 `CoordinatorFactory.routerAddress()`，再读取该 Router 的 `WETH()`。部署前必须链上确认两项调用均成功，且 `factory()` 返回非零地址。

@@ -3,6 +3,7 @@
 pragma solidity ^0.8.13;
 
 import {Test} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Clones} from "src/Clones.sol";
 import {
     BuybackVault,
@@ -12,26 +13,32 @@ import {
     AlreadyInitialized,
     ZeroAddress,
     InvalidInterval,
-    InvalidStartDelay,
+    InvalidFirstExecuteTime,
     InvalidTriggerAmount,
     InvalidBuybackAmount,
-    InvalidCallerReward,
     InsufficientBalance,
     TooEarly,
-    OnlySelf
+    OnlySelf,
+    UnauthorizedKeeper,
+    InvalidPair,
+    InvalidMinimumOutput,
+    InvalidExecutionDeadline,
+    BuybackAmountExceedsReserveLimit
 } from "src/BuybackVault.sol";
-import {BuybackVaultFactory, ZeroImplementation, UnknownVault} from "src/BuybackVaultFactory.sol";
+import {BuybackVaultFactory, ZeroImplementation, ZeroCoordinator, UnknownVault} from "src/BuybackVaultFactory.sol";
 import {
     CoordinatorFactory,
     BuybackVaultFactoryNotSet,
     ZeroBuybackVaultFactory,
+    InvalidBuybackVaultFactory,
     AlreadyConfigured
 } from "src/CoordinatorFactory.sol";
 import {TokenFactory, TokenConfig} from "src/TokenFactory.sol";
 import {PresaleFactory} from "src/PresaleFactory.sol";
 import {PRESALE} from "src/Presale.sol";
 import {FlapTaxTokenV3} from "src/lib/token/FlapTaxTokenV3.sol";
-import {ITaxProcessor} from "src/lib/interfaces/ITaxProcessor.sol";
+import {ITaxProcessor, TaxProcessorInitParams} from "src/lib/interfaces/ITaxProcessor.sol";
+import {TaxProcessor} from "src/TaxProcessor.sol";
 import {VanitySaltFinder} from "./TokenReservation.t.sol";
 
 contract MockVaultERC20 {
@@ -42,6 +49,7 @@ contract MockVaultERC20 {
     mapping(address => mapping(address => uint256)) public allowance;
     uint16 public buyTaxRate;
     uint16 public sellTaxRate;
+    address public taxedPair;
 
     function mint(address to, uint256 amount) external {
         balanceOf[to] += amount;
@@ -52,14 +60,24 @@ contract MockVaultERC20 {
         sellTaxRate = sell_;
     }
 
+    function setPair(address pair_) external {
+        taxedPair = pair_;
+    }
+
+    function mintFromPair(address to, uint256 amount) external returns (uint256 received) {
+        uint256 tax = (amount * buyTaxRate) / 10_000;
+        received = amount - tax;
+        balanceOf[address(this)] += tax;
+        balanceOf[to] += received;
+    }
+
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
         return true;
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
+        _transfer(msg.sender, to, amount);
         return true;
     }
 
@@ -68,9 +86,80 @@ contract MockVaultERC20 {
         if (allowed != type(uint256).max) {
             allowance[from][msg.sender] = allowed - amount;
         }
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
+        _transfer(from, to, amount);
         return true;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal {
+        balanceOf[from] -= amount;
+        uint256 tax = to == taxedPair ? (amount * sellTaxRate) / 10_000 : 0;
+        balanceOf[address(this)] += tax;
+        balanceOf[to] += amount - tax;
+    }
+}
+
+contract MockVaultWBNB is MockVaultERC20 {
+    function deposit() external payable {
+        balanceOf[msg.sender] += msg.value;
+    }
+
+    receive() external payable {
+        balanceOf[msg.sender] += msg.value;
+    }
+
+    function withdraw(uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        payable(msg.sender).transfer(amount);
+    }
+}
+
+contract MockBuybackPair {
+    address public immutable token0;
+    address public immutable token1;
+    mapping(address => uint256) public balanceOf;
+
+    uint112 private _reserve0;
+    uint112 private _reserve1;
+    bool public failMint;
+
+    constructor(address token0_, address token1_) {
+        token0 = token0_;
+        token1 = token1_;
+    }
+
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) {
+        return (_reserve0, _reserve1, uint32(block.timestamp));
+    }
+
+    function sync() external {
+        _sync();
+    }
+
+    function setFailMint(bool value) external {
+        failMint = value;
+    }
+
+    function setReservesForTest(uint112 reserve0, uint112 reserve1) external {
+        _reserve0 = reserve0;
+        _reserve1 = reserve1;
+    }
+
+    function mint(address to) external returns (uint256 liquidity) {
+        if (failMint) revert("mock: mint failed");
+        uint256 balance0 = IERC20(token0).balanceOf(address(this));
+        uint256 balance1 = IERC20(token1).balanceOf(address(this));
+        uint256 amount0 = balance0 - _reserve0;
+        uint256 amount1 = balance1 - _reserve1;
+        liquidity = amount0 < amount1 ? amount0 : amount1;
+        require(liquidity > 0, "mock: zero liquidity");
+        balanceOf[to] += liquidity;
+        _reserve0 = uint112(balance0);
+        _reserve1 = uint112(balance1);
+    }
+
+    function _sync() internal {
+        _reserve0 = uint112(IERC20(token0).balanceOf(address(this)));
+        _reserve1 = uint112(IERC20(token1).balanceOf(address(this)));
     }
 }
 
@@ -78,7 +167,6 @@ contract MockBuybackRouter {
     address public weth;
     address public pairFactory;
     bool public failSwap;
-    bool public failAddLiquidity;
 
     constructor(address _weth) {
         weth = _weth;
@@ -100,36 +188,36 @@ contract MockBuybackRouter {
         failSwap = v;
     }
 
-    function setFailAddLiquidity(bool v) external {
-        failAddLiquidity = v;
-    }
-
     function getAmountsOut(uint256 amountIn, address[] calldata path) external pure returns (uint256[] memory amounts) {
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
         amounts[path.length - 1] = amountIn;
     }
 
-    function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256, address[] calldata path, address to, uint256)
-        external
-        payable
-    {
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable {
         if (failSwap) revert("mock: swap failed");
-        MockVaultERC20(path[path.length - 1]).mint(to, msg.value);
+        require(deadline >= block.timestamp, "mock: expired");
+        uint256 received = MockVaultERC20(path[path.length - 1]).mintFromPair(to, msg.value);
+        require(received >= amountOutMin, "mock: insufficient output");
     }
 
-    function addLiquidityETH(address token, uint256 amountTokenDesired, uint256, uint256, address to, uint256)
-        external
-        payable
-        returns (uint256 amountToken, uint256 amountETH, uint256 liquidity)
-    {
-        if (failAddLiquidity) revert("mock: addLiquidity failed");
-        MockVaultERC20(token).transferFrom(msg.sender, address(this), amountTokenDesired);
-        amountToken = amountTokenDesired;
-        amountETH = msg.value;
-        liquidity = 1e18;
-        MockVaultERC20(token).mint(to, 0); // no-op touch
-        to;
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external {
+        if (failSwap) revert("mock: swap failed");
+        require(deadline >= block.timestamp, "mock: expired");
+        require(amountIn >= amountOutMin, "mock: insufficient output");
+        MockVaultERC20(path[0]).transferFrom(msg.sender, address(this), amountIn);
+        MockVaultERC20(path[path.length - 1]).mint(to, amountIn);
     }
 }
 
@@ -139,30 +227,48 @@ contract BuybackVaultTest is Test {
     BuybackVault impl;
     BuybackVaultFactory vaultFactory;
     MockVaultERC20 token;
+    MockVaultWBNB wbnbToken;
+    MockBuybackPair pairContract;
     MockBuybackRouter router;
-    address pair = address(0x1111);
-    address wbnb = address(0xBEEB);
+    address pair;
+    address wbnb;
 
     address coordinator = address(this);
     address caller = address(0xCA11);
+    address replacementKeeper = address(0xBEEF);
+
+    mapping(address => bool) private _keepers;
+
+    function hasRole(bytes32 role, address account) external view returns (bool) {
+        return role == keccak256("KEEPER_ROLE") && _keepers[account];
+    }
 
     function setUp() public {
         impl = new BuybackVault();
         vaultFactory = new BuybackVaultFactory(address(impl), coordinator);
         token = new MockVaultERC20();
+        wbnbToken = new MockVaultWBNB();
+        wbnb = address(wbnbToken);
+        vm.deal(wbnb, 1_000 ether);
+        pairContract = new MockBuybackPair(address(token), wbnb);
+        pair = address(pairContract);
+        token.setPair(pair);
+        token.mint(pair, 100 ether);
+        wbnbToken.mint(pair, 100 ether);
+        pairContract.sync();
         router = new MockBuybackRouter(wbnb);
+        _keepers[caller] = true;
         vm.deal(caller, 10 ether);
     }
 
-    function _timeConfig() internal pure returns (BuybackConfig memory) {
+    function _timeConfig() internal view returns (BuybackConfig memory) {
         return BuybackConfig({
             mode: BuybackMode.TokenBurn,
             trigger: TriggerMode.Time,
-            startDelayMinutes: 1,
-            intervalMinutes: 1,
+            firstExecuteAt: uint64(block.timestamp + 1 minutes),
+            intervalSeconds: 1 minutes,
             triggerAmount: 0,
-            buybackAmount: 0.01 ether,
-            callerReward: 0.001 ether
+            buybackAmount: 0.01 ether
         });
     }
 
@@ -172,14 +278,22 @@ contract BuybackVaultTest is Test {
         vault = BuybackVault(payable(clone));
     }
 
+    function _execute(BuybackVault vault, address keeper) internal {
+        vm.prank(keeper);
+        vault.executeBuyback(0.009 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
+    }
+
     function test_implementationLocked() public {
         vm.expectRevert(AlreadyInitialized.selector);
-        impl.initialize(address(token), pair, address(router), wbnb, _timeConfig());
+        impl.initialize(address(token), pair, address(router), wbnb, address(this), _timeConfig());
     }
 
     function test_zeroImplementationFactoryReverts() public {
         vm.expectRevert(ZeroImplementation.selector);
         new BuybackVaultFactory(address(0), coordinator);
+
+        vm.expectRevert(ZeroCoordinator.selector);
+        new BuybackVaultFactory(address(impl), address(0));
     }
 
     function test_initializeVaultUnknownReverts() public {
@@ -189,8 +303,14 @@ contract BuybackVaultTest is Test {
 
     function test_invalidConfigs() public {
         BuybackConfig memory cfg = _timeConfig();
-        cfg.intervalMinutes = 0;
+        cfg.intervalSeconds = 59;
         address clone = vaultFactory.createVault();
+        vm.expectRevert(InvalidInterval.selector);
+        vaultFactory.initializeVault(clone, address(token), pair, address(router), wbnb, cfg);
+
+        clone = vaultFactory.createVault();
+        cfg = _timeConfig();
+        cfg.intervalSeconds = 365 days + 1;
         vm.expectRevert(InvalidInterval.selector);
         vaultFactory.initializeVault(clone, address(token), pair, address(router), wbnb, cfg);
 
@@ -208,16 +328,39 @@ contract BuybackVaultTest is Test {
 
         clone = vaultFactory.createVault();
         cfg = _timeConfig();
-        cfg.startDelayMinutes = 0;
-        vm.expectRevert(InvalidStartDelay.selector);
+        cfg.firstExecuteAt = uint64(block.timestamp + 59);
+        vm.expectRevert(InvalidFirstExecuteTime.selector);
         vaultFactory.initializeVault(clone, address(token), pair, address(router), wbnb, cfg);
+    }
 
-        clone = vaultFactory.createVault();
+    function test_absoluteFirstExecutionTimeIsNotShiftedByInitialization() public {
+        BuybackConfig memory cfg = _timeConfig();
+        uint64 selectedTime = uint64(block.timestamp + 1 days);
+        cfg.firstExecuteAt = selectedTime;
+
+        vm.warp(block.timestamp + 1 hours);
+        BuybackVault vault = _cloneInit(cfg);
+        assertEq(vault.nextExecuteTime(), selectedTime);
+
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(selectedTime - 1);
+        assertFalse(vault.canExecuteBuyback());
+
+        vm.warp(selectedTime);
+        assertTrue(vault.canExecuteBuyback());
+        _execute(vault, caller);
+    }
+
+    function test_intervalBoundsAreSeconds() public {
+        BuybackConfig memory cfg = _timeConfig();
+        cfg.intervalSeconds = 1 minutes;
+        BuybackVault minVault = _cloneInit(cfg);
+        assertEq(minVault.intervalSeconds(), 60);
+
         cfg = _timeConfig();
-        cfg.callerReward = 0.01 ether;
-        cfg.buybackAmount = 0.01 ether; // reward >= amount
-        vm.expectRevert(InvalidCallerReward.selector);
-        vaultFactory.initializeVault(clone, address(token), pair, address(router), wbnb, cfg);
+        cfg.intervalSeconds = 365 days;
+        BuybackVault maxVault = _cloneInit(cfg);
+        assertEq(maxVault.intervalSeconds(), 365 days);
     }
 
     function test_timeTrigger_tooEarlyThenExecute() public {
@@ -227,82 +370,116 @@ contract BuybackVaultTest is Test {
         assertFalse(vault.canExecuteBuyback());
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback();
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.warp(block.timestamp + 60);
         assertTrue(vault.canExecuteBuyback());
 
-        uint256 callerBefore = caller.balance;
-        vm.prank(caller);
-        vault.executeBuyback();
+        _execute(vault, caller);
 
-        assertEq(caller.balance, callerBefore + 0.001 ether);
         assertEq(token.balanceOf(DEAD), 0.01 ether);
         assertEq(vault.buybackCount(), 1);
         assertEq(vault.totalBuybackBNB(), 0.01 ether);
-        assertEq(address(vault).balance, 0.05 ether - 0.01 ether - 0.001 ether);
+        assertEq(address(vault).balance, 0.04 ether);
 
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback();
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_timeTrigger_missedWindowExecutesOnce() public {
         BuybackVault vault = _cloneInit(_timeConfig());
         vm.deal(address(vault), 1 ether);
         vm.warp(block.timestamp + 10 days);
-        vm.prank(caller);
-        vault.executeBuyback();
+        _execute(vault, caller);
         assertEq(vault.buybackCount(), 1);
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback();
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_balanceTrigger() public {
         BuybackConfig memory cfg = BuybackConfig({
             mode: BuybackMode.TokenBurn,
             trigger: TriggerMode.Balance,
-            startDelayMinutes: 0,
-            intervalMinutes: 1,
+            firstExecuteAt: 0,
+            intervalSeconds: 1 minutes,
             triggerAmount: 1 ether,
-            buybackAmount: 0.01 ether,
-            callerReward: 0
+            buybackAmount: 0.01 ether
         });
         BuybackVault vault = _cloneInit(cfg);
 
         vm.deal(address(vault), 0.5 ether);
         vm.prank(caller);
         vm.expectRevert(InsufficientBalance.selector);
-        vault.executeBuyback();
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.deal(address(vault), 1 ether);
-        vm.prank(caller);
-        vault.executeBuyback();
+        _execute(vault, caller);
         assertEq(vault.buybackCount(), 1);
         assertEq(address(vault).balance, 0.99 ether);
+    }
+
+    function test_balanceTriggerAllowsFractionalThreshold() public {
+        BuybackConfig memory cfg = BuybackConfig({
+            mode: BuybackMode.TokenBurn,
+            trigger: TriggerMode.Balance,
+            firstExecuteAt: 0,
+            intervalSeconds: 1 minutes,
+            triggerAmount: 0.015 ether,
+            buybackAmount: 0.01 ether
+        });
+        BuybackVault vault = _cloneInit(cfg);
+        vm.deal(address(vault), 0.015 ether);
+
+        _execute(vault, caller);
+        assertEq(address(vault).balance, 0.005 ether);
+    }
+
+    function test_balanceTriggerRejectsTimeAndThresholdBelowExecutionAmount() public {
+        BuybackConfig memory cfg = BuybackConfig({
+            mode: BuybackMode.TokenBurn,
+            trigger: TriggerMode.Balance,
+            firstExecuteAt: uint64(block.timestamp + 1 days),
+            intervalSeconds: 1 minutes,
+            triggerAmount: 0.01 ether,
+            buybackAmount: 0.01 ether
+        });
+        address clone = vaultFactory.createVault();
+        vm.expectRevert(InvalidFirstExecuteTime.selector);
+        vaultFactory.initializeVault(clone, address(token), pair, address(router), wbnb, cfg);
+
+        cfg.firstExecuteAt = 0;
+        cfg.triggerAmount = 0.009 ether;
+        clone = vaultFactory.createVault();
+        vm.expectRevert(InvalidTriggerAmount.selector);
+        vaultFactory.initializeVault(clone, address(token), pair, address(router), wbnb, cfg);
     }
 
     function test_timeAndBalance() public {
         BuybackConfig memory cfg = BuybackConfig({
             mode: BuybackMode.TokenBurn,
             trigger: TriggerMode.TimeAndBalance,
-            startDelayMinutes: 1,
-            intervalMinutes: 1,
+            firstExecuteAt: uint64(block.timestamp + 1 minutes),
+            intervalSeconds: 1 minutes,
             triggerAmount: 1 ether,
-            buybackAmount: 0.01 ether,
-            callerReward: 0
+            buybackAmount: 0.01 ether
         });
         BuybackVault vault = _cloneInit(cfg);
         vm.deal(address(vault), 1 ether);
 
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback();
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.warp(block.timestamp + 60);
+        vm.deal(address(vault), 0.5 ether);
         vm.prank(caller);
-        vault.executeBuyback();
+        vm.expectRevert(InsufficientBalance.selector);
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        vm.deal(address(vault), 1 ether);
+        _execute(vault, caller);
         assertEq(vault.buybackCount(), 1);
     }
 
@@ -318,14 +495,12 @@ contract BuybackVaultTest is Test {
     function test_lpFallbackToTokenBurn() public {
         BuybackConfig memory cfg = _timeConfig();
         cfg.mode = BuybackMode.LpBurn;
-        cfg.callerReward = 0;
         BuybackVault vault = _cloneInit(cfg);
-        router.setFailAddLiquidity(true);
+        pairContract.setFailMint(true);
         vm.deal(address(vault), 0.05 ether);
         vm.warp(block.timestamp + 60);
 
-        vm.prank(caller);
-        vault.executeBuyback();
+        _execute(vault, caller);
 
         assertEq(token.balanceOf(DEAD), 0.01 ether);
         assertEq(vault.totalLpBurned(), 0);
@@ -336,23 +511,101 @@ contract BuybackVaultTest is Test {
     function test_lpSuccessBurnsLpNotTokenInventory() public {
         BuybackConfig memory cfg = _timeConfig();
         cfg.mode = BuybackMode.LpBurn;
-        cfg.callerReward = 0;
+        BuybackVault vault = _cloneInit(cfg);
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+
+        _execute(vault, caller);
+
+        assertGt(vault.totalLpBurned(), 0);
+        assertEq(pairContract.balanceOf(DEAD), vault.totalLpBurned());
+        assertEq(token.balanceOf(address(vault)), 0);
+        assertLe(vault.totalBuybackBNB(), 0.01 ether);
+        assertEq(address(vault).balance, 0.05 ether - vault.totalBuybackBNB());
+    }
+
+    function test_tokenBurnAccountsForActualBuyTaxOutput() public {
+        token.setTax(1000, 0); // 10% buy tax
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+
+        vm.prank(caller);
+        vault.executeBuyback(0.008 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(token.balanceOf(DEAD), 0.009 ether);
+        assertEq(vault.totalBurnedToken(), 0.009 ether);
+        assertEq(token.balanceOf(address(token)), 0.001 ether, "buy tax remains in token tax inventory");
+    }
+
+    function test_lpUsesActualFeeOnTransferAmounts() public {
+        token.setTax(500, 1000); // 5% buy tax, 10% sell tax into the pair
+        BuybackConfig memory cfg = _timeConfig();
+        cfg.mode = BuybackMode.LpBurn;
         BuybackVault vault = _cloneInit(cfg);
         vm.deal(address(vault), 0.05 ether);
         vm.warp(block.timestamp + 60);
 
         vm.prank(caller);
-        vault.executeBuyback();
+        vault.executeBuyback(0.008 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
 
-        assertEq(vault.totalLpBurned(), 1e18);
+        assertGt(vault.totalLpBurned(), 0);
+        assertEq(pairContract.balanceOf(DEAD), vault.totalLpBurned());
         assertEq(token.balanceOf(address(vault)), 0);
-        assertEq(vault.totalBuybackBNB(), 0.01 ether);
+        assertGt(token.balanceOf(address(token)), 0, "both buy and add-liquidity taxes are retained by token");
+        assertEq(address(vault).balance, 0.05 ether - vault.totalBuybackBNB());
+    }
+
+    function test_executionQuoteAndDeadlineGuards() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+
+        vm.expectRevert(InvalidMinimumOutput.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0, 0, uint64(block.timestamp + 1 minutes));
+
+        vm.expectRevert(InvalidExecutionDeadline.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp - 1));
+
+        vm.expectRevert(InvalidExecutionDeadline.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 11 minutes));
+    }
+
+    function test_minOutputFailureRollsBackScheduleAndFunds() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+        uint64 originalNext = vault.nextExecuteTime();
+
+        vm.expectRevert("mock: insufficient output");
+        vm.prank(caller);
+        vault.executeBuyback(0.02 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(vault.buybackCount(), 0);
+        assertEq(vault.lastExecuteTime(), 0);
+        assertEq(vault.nextExecuteTime(), originalNext);
+        assertEq(address(vault).balance, 0.05 ether);
+    }
+
+    function test_reserveLimitBlocksOversizedBuyback() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+        pairContract.setReservesForTest(100 ether, 0.5 ether); // 1% limit = 0.005 BNB
+
+        assertFalse(vault.canExecuteBuyback());
+        vm.expectRevert(BuybackAmountExceedsReserveLimit.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_lpBuybackAndBurnOnlySelf() public {
         BuybackVault vault = _cloneInit(_timeConfig());
         vm.expectRevert(OnlySelf.selector);
-        vault.lpBuybackAndBurn(0.01 ether);
+        vault.lpBuybackAndBurn(0.01 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
     }
 
     function test_insufficientBalance() public {
@@ -360,13 +613,89 @@ contract BuybackVaultTest is Test {
         vm.warp(block.timestamp + 60);
         vm.prank(caller);
         vm.expectRevert(InsufficientBalance.selector);
-        vault.executeBuyback();
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+    }
+
+    function test_nonKeeperCannotExecute() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+
+        vm.expectRevert(UnauthorizedKeeper.selector);
+        vm.prank(address(0xBAD));
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+    }
+
+    function test_keeperRoleIsReadDynamically() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+
+        _keepers[caller] = false;
+        vm.expectRevert(UnauthorizedKeeper.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        _keepers[replacementKeeper] = true;
+        _execute(vault, replacementKeeper);
+        assertEq(vault.buybackCount(), 1);
+    }
+
+    function test_keeperTaxProcessingFundsVaultThenBuyback() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        TaxProcessor processor = new TaxProcessor(address(this));
+        processor.initialize(
+            TaxProcessorInitParams({
+                quoteToken: wbnb,
+                router: address(router),
+                feeReceiver: address(vault),
+                marketAddress: address(0),
+                dividendAddress: address(0),
+                taxToken: address(token),
+                feeRate: 0,
+                marketBps: 0,
+                deflationBps: 0,
+                lpBps: 0,
+                dividendBps: 0,
+                dividendToken: address(0),
+                commissionReceiver: address(0),
+                commissionBps: 0,
+                converter: address(0),
+                liqExpectedOutputAmount: 0
+            })
+        );
+
+        token.mint(address(token), 0.02 ether);
+        vm.prank(address(token));
+        token.approve(address(processor), type(uint256).max);
+        vm.prank(address(token));
+        processor.processTaxTokens(0.02 ether);
+
+        assertEq(address(vault).balance, 0, "queueing tax never performs an inline swap");
+        assertEq(processor.pendingTaxTokens(), 0.02 ether);
+
+        vm.prank(caller);
+        processor.processPendingTax(0.02 ether, 0.019 ether, uint64(block.timestamp + 1 minutes));
+        assertEq(address(vault).balance, 0.02 ether, "processed tax BNB reaches the vault");
+        assertEq(processor.pendingTaxTokens(), 0);
+
+        vm.warp(block.timestamp + 1 minutes);
+        _execute(vault, caller);
+        assertEq(token.balanceOf(DEAD), 0.01 ether);
+        assertEq(address(vault).balance, 0.01 ether);
     }
 
     function test_zeroAddressesOnInit() public {
         address clone = vaultFactory.createVault();
         vm.expectRevert(ZeroAddress.selector);
         vaultFactory.initializeVault(clone, address(0), pair, address(router), wbnb, _timeConfig());
+    }
+
+    function test_pairMustMatchTokenAndWbnb() public {
+        MockBuybackPair wrongPair = new MockBuybackPair(address(token), address(0xBAD));
+        address clone = vaultFactory.createVault();
+        vm.expectRevert(InvalidPair.selector);
+        vaultFactory.initializeVault(clone, address(token), address(wrongPair), address(router), wbnb, _timeConfig());
     }
 }
 
@@ -379,15 +708,17 @@ contract BuybackVaultCoordinatorTest is Test {
     CoordinatorFactory coordinator;
     BuybackVaultFactory vaultFactory;
     MockBuybackRouter router;
-    address wbnb = address(0xAABB);
-    address pair = address(0x1111);
+    MockVaultWBNB wbnbToken;
+    address wbnb;
     address creator = address(0xB0B);
     address feeReceiver = address(0xfee1);
+    address keeper = address(0xCA11);
 
     function setUp() public {
         flapImpl = new FlapTaxTokenV3(5e6 ether, 1e7 ether);
         MockPairFactoryStub pairFactory = new MockPairFactoryStub();
-        pairFactory.setPair(pair);
+        wbnbToken = new MockVaultWBNB();
+        wbnb = address(wbnbToken);
         router = new MockBuybackRouter(wbnb);
         router.setPairFactory(address(pairFactory));
 
@@ -395,6 +726,7 @@ contract BuybackVaultCoordinatorTest is Test {
         PRESALE template = new PRESALE();
         presaleFactory = new PresaleFactory(address(template), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        coordinator.grantRole(coordinator.KEEPER_ROLE(), keeper);
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
 
@@ -424,15 +756,14 @@ contract BuybackVaultCoordinatorTest is Test {
         require(salt != bytes32(0), "salt");
     }
 
-    function _buyback() internal pure returns (BuybackConfig memory) {
+    function _buyback() internal view returns (BuybackConfig memory) {
         return BuybackConfig({
             mode: BuybackMode.TokenBurn,
             trigger: TriggerMode.Time,
-            startDelayMinutes: 1,
-            intervalMinutes: 1,
+            firstExecuteAt: uint64(block.timestamp + 1 minutes),
+            intervalSeconds: 1 minutes,
             triggerAmount: 0,
-            buybackAmount: 0.01 ether,
-            callerReward: 0
+            buybackAmount: 0.01 ether
         });
     }
 
@@ -453,10 +784,14 @@ contract BuybackVaultCoordinatorTest is Test {
         assertEq(presale, coordinator.tokenPresales(token));
         assertEq(coordinator.tokenVaults(token), vault);
         assertEq(BuybackVault(payable(vault)).token(), token);
-        assertEq(BuybackVault(payable(vault)).pair(), pair);
+        assertEq(BuybackVault(payable(vault)).pair(), FlapTaxTokenV3(token).mainPool());
+        assertEq(BuybackVault(payable(vault)).keeperRegistry(), address(coordinator));
+        assertTrue(coordinator.hasRole(coordinator.KEEPER_ROLE(), keeper));
 
         address taxProcessor = FlapTaxTokenV3(token).taxProcessor();
         assertEq(ITaxProcessor(taxProcessor).feeReceiver(), vault);
+        assertEq(TaxProcessor(payable(taxProcessor)).keeperRegistry(), address(coordinator));
+        assertTrue(ITaxProcessor(taxProcessor).requiresMEVProtection());
     }
 
     function test_createTokenWithVaultRequiresFactory() public {
@@ -475,21 +810,26 @@ contract BuybackVaultCoordinatorTest is Test {
             new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
         vm.expectRevert(ZeroBuybackVaultFactory.selector);
         bare.setBuybackVaultFactory(address(0));
+
+        vm.expectRevert(InvalidBuybackVaultFactory.selector);
+        bare.setBuybackVaultFactory(address(0x1234));
+
+        BuybackVault wrongImpl = new BuybackVault();
+        BuybackVaultFactory wrongRegistryFactory = new BuybackVaultFactory(address(wrongImpl), address(this));
+        vm.expectRevert(InvalidBuybackVaultFactory.selector);
+        bare.setBuybackVaultFactory(address(wrongRegistryFactory));
     }
 }
 
 contract MockPairFactoryStub {
     address public pair;
 
-    function setPair(address p) external {
-        pair = p;
-    }
-
     function getPair(address, address) external view returns (address) {
         return pair;
     }
 
-    function createPair(address, address) external view returns (address) {
+    function createPair(address tokenA, address tokenB) external returns (address) {
+        if (pair == address(0)) pair = address(new MockBuybackPair(tokenA, tokenB));
         return pair;
     }
 }

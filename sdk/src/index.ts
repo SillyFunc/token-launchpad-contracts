@@ -8,3 +8,4 @@ export { presaleAbi } from "./generated/abis/presale.js";
 export { flapTaxTokenV3Abi } from "./generated/abis/flapTaxTokenV3.js";
 export { buybackVaultAbi } from "./generated/abis/buybackVault.js";
 export { buybackVaultFactoryAbi } from "./generated/abis/buybackVaultFactory.js";
+export { taxProcessorAbi } from "./generated/abis/taxProcessor.js";

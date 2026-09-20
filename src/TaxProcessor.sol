@@ -3,6 +3,8 @@
 pragma solidity ^0.8.13;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
 import {IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
 import {
@@ -22,25 +24,32 @@ error TaxTokenRequired();
 error RouterRequired();
 error FeeReceiverRequired();
 error NotTaxToken();
+error KeeperRegistryRequired();
+error UnauthorizedTaxKeeper();
+error InvalidTaxAmount();
+error UnsafeMinQuoteOut();
+error InvalidProcessingDeadline();
+error QuoteTokenUnavailable();
+error InsufficientQuoteOutput();
 
-/// @notice Launchpad 极简 TaxProcessor：税代币 → swap 成 quote(WBNB) → unwrap 原生 BNB
-///         → 即时转给发币时固定的唯一收款人（feeReceiver）。
-/// @dev 单通道模型，清算即派发（无 dispatch 派发、无分账累计、无 keeper 依赖）：
+/// @notice Launchpad 单通道 TaxProcessor：代币转账只归集税代币，由平台 keeper 异步兑换并派发。
+/// @dev 异步清算避免在用户卖出交易里用无保护报价嵌套 swap：
 ///      1. 收款人由 Coordinator 在发币时经 initialize 固定，运行期无任何变更入口
 ///         （清算时动态传收款人=任何人可把税金打给自己，故恒为固定值）
-///      2. 失败路径落点唯一：swap 失败 → 税代币直转 feeReceiver；
-///         原生转账失败（收款人为拒收 BNB 的合约）→ 包回 WBNB 走 ERC20 转账，资金不锁死
-///      3. 方向信号（swap 输出 vs liqExpectedOutputAmount）原样回传，
-///         供代币 _adjustLiquidationThreshold 动态调节清算阈值
-///      4. 上游四通道（market/deflation/lp/dividend）、commission、Dividend 交互全部移除；
+///      2. keeper 必须提交最低输出与短时限；swap 失败整笔回滚，税代币保留在本合约等待重试
+///      3. 原生转账失败（收款人为拒收 BNB 的合约）→ 包回 WBNB 走 ERC20 转账，资金不锁死
+///      4. 方向信号在 keeper 清算后缓存，并在下一次代币归集时回传给 FlapTaxTokenV3
+///      5. 上游四通道（market/deflation/lp/dividend）、commission、Dividend 交互全部移除；
 ///         ITaxProcessor（src/lib 受保护接口）签名不变，兼容视图以零值存根实现
-contract TaxProcessor is ITaxProcessor {
-    uint256 private constant DEADLINE_BUFFER = 300;
+contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
+    bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+    uint64 public constant MAX_DEADLINE_DELAY = 10 minutes;
 
     address private immutable _deployer;
     bool private _initialized;
 
     address public immutable override swapRegistry; // address(0) — 本实现不使用 SwapRegistry
+    address public immutable keeperRegistry;
 
     address public override taxToken;
     address public override router;
@@ -50,18 +59,21 @@ contract TaxProcessor is ITaxProcessor {
 
     /// @notice 累计已派发给收款人的 quote 数量（原生 BNB 与 WBNB 两种到账形态合计）
     uint256 public totalQuoteSentToReceiver;
+    int8 public pendingDirection;
 
     event Initialized(address indexed taxToken);
+    event TaxQueued(uint256 taxAmount, uint256 pendingBalance);
     event TaxProcessed(uint256 taxAmount, uint256 quoteOut, int8 direction);
     event TaxForwarded(address indexed receiver, uint256 amount, bool isNative);
-    event FeeForwardedToReceiver(address indexed token, uint256 amount, address indexed receiver);
 
     /// @dev WETH.withdraw 解包回款入口：仅兜收，不承载业务
     receive() external payable {}
 
-    constructor() {
+    constructor(address keeperRegistry_) {
+        if (keeperRegistry_ == address(0)) revert KeeperRegistryRequired();
         _deployer = msg.sender;
         swapRegistry = address(0);
+        keeperRegistry = keeperRegistry_;
     }
 
     modifier onlyTaxToken() {
@@ -92,34 +104,51 @@ contract TaxProcessor is ITaxProcessor {
     // 核心：处理税
     // ---------------------------------------------------------------------------
 
-    /// @notice 拉取税代币 → swap 成 quote(WBNB) → unwrap 原生 BNB → 即时转给 feeReceiver
+    /// @notice 从 FlapTaxTokenV3 拉取税代币并排队，不在用户卖出交易内执行 DEX swap。
     /// @return direction 方向信号语义与 FlapTaxTokenV3._adjustLiquidationThreshold 一致：
     ///     > 0 → swap 输出低于参考（价格弱，提高阈值）
     ///     < 0 → swap 输出高于参考（价格强，降低阈值）
     ///     0   → 无参考值或相等
-    // 重入面：原生转账收款方为发币时固定地址，重入本合约受 onlyTaxToken 限制；
-    // 代币侧 notLiquidating=false 期间税收归零且不再触发清算，无重入套利路径
-    // slither-disable-next-line reentrancy-eth
     function processTaxTokens(uint256 taxAmount) external override onlyTaxToken returns (int8) {
         if (taxAmount == 0) return 0;
 
-        TransferHelper.safeTransferFrom(taxToken, msg.sender, address(this), taxAmount);
+        int8 direction = pendingDirection;
+        if (direction != 0) pendingDirection = 0;
 
-        uint256 out = _swapToQuote(taxAmount);
-        if (out > 0) {
-            _forwardQuote(out);
+        uint256 before = IERC20(taxToken).balanceOf(address(this));
+        TransferHelper.safeTransferFrom(taxToken, msg.sender, address(this), taxAmount);
+        uint256 received = IERC20(taxToken).balanceOf(address(this)) - before;
+        emit TaxQueued(received, IERC20(taxToken).balanceOf(address(this)));
+        return direction;
+    }
+
+    /// @notice keeper 分批清算已归集税代币。失败会整笔回滚，原始税代币仍可再次处理。
+    function processPendingTax(uint256 amountIn, uint256 minQuoteOut, uint64 deadline)
+        external
+        nonReentrant
+        returns (uint256 out)
+    {
+        if (!IAccessControl(keeperRegistry).hasRole(KEEPER_ROLE, msg.sender)) {
+            revert UnauthorizedTaxKeeper();
+        }
+        uint256 pending = IERC20(taxToken).balanceOf(address(this));
+        if (amountIn == 0 || amountIn > pending) revert InvalidTaxAmount();
+        if (minQuoteOut == 0) revert UnsafeMinQuoteOut();
+        if (deadline < block.timestamp || deadline > block.timestamp + MAX_DEADLINE_DELAY) {
+            revert InvalidProcessingDeadline();
         }
 
-        // 方向信号（弱化异常场景：swap 失败时 out==0，返回 +1 让其回升阈值→更少清算）
-        // slither-disable-next-line uninitialized-local 默认 0 是文档化语义（无参考值/相等 → 0），非未初始化误用
+        out = _swapToQuote(amountIn, minQuoteOut, deadline);
+        _forwardQuote(out);
+
         int8 direction;
         if (liqExpectedOutputAmount != 0) {
             if (out > liqExpectedOutputAmount) direction = -1;
             else if (out < liqExpectedOutputAmount) direction = 1;
         }
+        pendingDirection = direction;
 
-        emit TaxProcessed(taxAmount, out, direction);
-        return direction;
+        emit TaxProcessed(amountIn, out, direction);
     }
 
     /// @notice BondingCurve 阶段税（本项目不触发；保留接口兼容）：quote 直转收款人
@@ -129,22 +158,18 @@ contract TaxProcessor is ITaxProcessor {
         _forwardQuote(quoteAmount);
     }
 
-    /// @notice 接口兼容存根：本实现清算即派发，无累计余额可派发，恒为 no-op
+    /// @notice 接口兼容存根；异步清算使用 `processPendingTax`。
     function dispatch() external override {}
 
     // ---------------------------------------------------------------------------
     // 内部：swap 与派发
     // ---------------------------------------------------------------------------
 
-    /// @notice 将税代币换成 quote token；失败时直接给 feeReceiver 兜底并记录事件
-    function _swapToQuote(uint256 amountIn) internal returns (uint256 out) {
+    /// @notice 将税代币换成 quote token；任何失败均回滚，保留原始税代币供 keeper 重试。
+    function _swapToQuote(uint256 amountIn, uint256 minQuoteOut, uint64 deadline) internal returns (uint256 out) {
         address quote = getQuoteToken();
         address weth_ = weth();
-        if (quote == address(0) || weth_ == address(0)) {
-            TransferHelper.safeTransfer(taxToken, feeReceiver, amountIn);
-            emit FeeForwardedToReceiver(taxToken, amountIn, feeReceiver);
-            return 0;
-        }
+        if (quote == address(0) || weth_ == address(0)) revert QuoteTokenUnavailable();
 
         address[] memory path;
         if (quote == weth_) {
@@ -159,19 +184,15 @@ contract TaxProcessor is ITaxProcessor {
         }
 
         uint256 before = IERC20(quote).balanceOf(address(this));
+        TransferHelper.safeApprove(taxToken, router, 0);
         TransferHelper.safeApprove(taxToken, router, amountIn);
 
-        try IPancakeRouter02(router)
-            .swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                amountIn, 0, path, address(this), block.timestamp + DEADLINE_BUFFER
-            ) {}
-        catch {
-            TransferHelper.safeTransfer(taxToken, feeReceiver, amountIn); // 兑换失败兜底，不锁定资金
-            emit FeeForwardedToReceiver(taxToken, amountIn, feeReceiver);
-            return 0;
-        }
+        IPancakeRouter02(router)
+            .swapExactTokensForTokensSupportingFeeOnTransferTokens(amountIn, minQuoteOut, path, address(this), deadline);
+        TransferHelper.safeApprove(taxToken, router, 0);
 
         out = IERC20(quote).balanceOf(address(this)) - before;
+        if (out < minQuoteOut) revert InsufficientQuoteOutput();
     }
 
     /// @notice 派发 quote 给 feeReceiver：WETH 先解包原生 BNB 转账；
@@ -216,6 +237,10 @@ contract TaxProcessor is ITaxProcessor {
 
     function getQuoteToken() public view override returns (address) {
         return isWeth() ? weth() : quoteToken;
+    }
+
+    function pendingTaxTokens() external view returns (uint256) {
+        return IERC20(taxToken).balanceOf(address(this));
     }
 
     function flapBlackHole() external pure override returns (address) {
@@ -296,8 +321,8 @@ contract TaxProcessor is ITaxProcessor {
         return 0;
     }
 
-    function requiresMEVProtection() external view override returns (bool) {
-        return false;
+    function requiresMEVProtection() external pure override returns (bool) {
+        return true;
     }
 
     function feeConfig() external view override returns (PackedFeeConfig memory) {
