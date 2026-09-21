@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "flap-docs": {
-      "type": "http",
-      "url": "https://docs.flap.sh/flap/~gitbook/mcp"
-    }
-  }
-}
