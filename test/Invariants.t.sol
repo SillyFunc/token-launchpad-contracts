@@ -287,7 +287,6 @@ contract Handler {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: address(0xfee1),
-            taxDuration: 7 days,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

@@ -745,7 +745,6 @@ contract BuybackVaultCoordinatorTest is Test {
             buyTax: 200,
             sellTax: 300,
             feeRecipient: feeReceiver,
-            taxDuration: 365 days,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });
@@ -792,6 +791,7 @@ contract BuybackVaultCoordinatorTest is Test {
         assertEq(ITaxProcessor(taxProcessor).feeReceiver(), vault);
         assertEq(TaxProcessor(payable(taxProcessor)).keeperRegistry(), address(coordinator));
         assertTrue(ITaxProcessor(taxProcessor).requiresMEVProtection());
+        assertEq(FlapTaxTokenV3(token).taxExpirationTime(), coordinator.TAX_DURATION());
     }
 
     function test_createTokenWithVaultRequiresFactory() public {

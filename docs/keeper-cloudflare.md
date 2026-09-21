@@ -201,7 +201,7 @@ pnpm wrangler d1 execute DB --remote --json --command "SELECT block_number,sampl
 - 选择 BNB Chain 官方列出的免费 MEV 保护私有 RPC，例如 PancakeSwap、48Club 或 Merkle；上线前实测 `eth_sendRawTransaction`、回执可见性和丢包恢复。
 - 将 `CHAIN_ID` 改为 `56`，替换生产 Keeper、Coordinator、D1 和 Secrets；不要复用测试环境 D1。
 - 在 BSC fork 和测试网上完成税费代币、买税/卖税、LP fallback、价格偏离、RPC 失败、D1 失败、低余额、重复 Cron、nonce 卡住与权限撤销测试。
-- 以新广播产物和 BscScan 核验结果同步 SDK、部署地址及前端文档后才能开放 UI。
+- 以新广播产物和 BscScan 核验结果同步部署地址、前端所需最小 ABI 及对接文档后才能开放 UI。
 
 ## 6. 故障验证矩阵
 

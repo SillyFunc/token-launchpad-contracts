@@ -10,7 +10,8 @@ import {
     CoordinatorFactory,
     NotTokenCreator,
     InvalidMaxBuyPerWallet,
-    AlreadyConfigured
+    AlreadyConfigured,
+    InvalidAntiFarmerDuration
 } from "src/CoordinatorFactory.sol";
 import {TokenFactory, TokenConfig, BuyFeeTooHigh, SellFeeTooHigh} from "src/TokenFactory.sol";
 import {TaxProcessor} from "src/TaxProcessor.sol";
@@ -318,6 +319,20 @@ contract CoordinatorTest is Test {
         assertEq(FlapTaxTokenV3(token).metaURI(), "ipfs://QmTestMeta");
     }
 
+    function test_TaxDurationIsPlatformFixed() public {
+        address token = coordinator.getTokenPresalePairsByCreator(creator, 0, 1)[0].tokenAddress;
+        address presale = coordinator.getTokenPresale(token);
+
+        // 迁移前 packed 字段仍保存时长；创建者不能通过发币参数改变平台税期。
+        assertEq(FlapTaxTokenV3(token).taxExpirationTime(), coordinator.TAX_DURATION());
+
+        vm.prank(creator);
+        PRESALE(payable(presale)).claimAllTokens();
+
+        // 迁移后同一字段转换为绝对到期时间。
+        assertEq(FlapTaxTokenV3(token).taxExpirationTime(), block.timestamp + coordinator.TAX_DURATION());
+    }
+
     function test_RevertWhen_TaxAboveTenPercent() public {
         TokenConfig memory cfg = _tokenConfig();
         cfg.buyTax = 1001; // > 10%
@@ -342,6 +357,24 @@ contract CoordinatorTest is Test {
         vm.prank(creator);
         (address token,) = coordinator.createToken{value: 1 ether}(cfg, salt);
         assertEq(FlapTaxTokenV3(token).antiFarmerDuration(), 0);
+    }
+
+    function test_MaxAntiFarmerDurationAllowed() public {
+        TokenConfig memory cfg = _tokenConfig();
+        cfg.antiFarmerDuration = coordinator.MAX_ANTI_FARMER_DURATION();
+        bytes32 salt = _vanitySalt("max-af");
+        vm.prank(creator);
+        (address token,) = coordinator.createToken{value: 1 ether}(cfg, salt);
+        assertEq(FlapTaxTokenV3(token).antiFarmerDuration(), 365 days);
+    }
+
+    function test_RevertWhen_AntiFarmerDurationExceedsMaximum() public {
+        TokenConfig memory cfg = _tokenConfig();
+        cfg.antiFarmerDuration = coordinator.MAX_ANTI_FARMER_DURATION() + 1;
+        bytes32 salt = _vanitySalt("over-af");
+        vm.prank(creator);
+        vm.expectRevert(InvalidAntiFarmerDuration.selector);
+        coordinator.createToken{value: 1 ether}(cfg, salt);
     }
 
     function test_RevertWhen_MaxBuyPerWalletZero() public {
@@ -385,7 +418,6 @@ contract CoordinatorTest is Test {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: feeReceiver,
-            taxDuration: 7 days,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

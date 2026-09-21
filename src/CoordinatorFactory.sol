@@ -46,6 +46,7 @@ error InvalidVanitySuffix();
 error BuybackVaultFactoryNotSet();
 error ZeroBuybackVaultFactory();
 error InvalidBuybackVaultFactory();
+error InvalidAntiFarmerDuration();
 
 // ============================================================================
 // CoordinatorFactory - 一站式发币编排（代币 + Pair + TaxProcessor + 托管仓）
@@ -53,6 +54,10 @@ error InvalidBuybackVaultFactory();
 contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     /// @notice 平台自动化执行者。仅负责触发税费处理与回购，不拥有资金管理权限。
     bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+    /// @notice 平台统一税期。对齐 Flap 官方上限：100 年；创建者不能覆盖。
+    uint256 public constant TAX_DURATION = 100 * 365 days;
+    /// @notice Anti-Farmer 可配置上限。对齐 Flap 产品边界：0…365 天。
+    uint256 public constant MAX_ANTI_FARMER_DURATION = 365 days;
 
     TokenFactory public tokenFactory;
     PresaleFactory public presaleFactory;
@@ -181,6 +186,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         if (msg.value < creationFee) revert InsufficientCreationFee();
         if (bytes(tokenConfig.name).length == 0) revert EmptyTokenName();
         if (bytes(tokenConfig.symbol).length == 0) revert EmptyTokenSymbol();
+        if (tokenConfig.antiFarmerDuration > MAX_ANTI_FARMER_DURATION) revert InvalidAntiFarmerDuration();
         if (salt == bytes32(0)) revert InvalidSalt();
         address predicted = tokenFactory.predictTokenAddress(salt);
         if (uint160(predicted) & 0xFFFF != VANITY_SUFFIX) revert InvalidVanitySuffix();
@@ -340,7 +346,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
             dividendContract: address(0), // 单通道模型：无 Dividend 实例
             quoteToken: _wbnb(),
             liqExpectedOutputAmount: tokenConfig.liqExpectedOutputAmount,
-            taxDuration: tokenConfig.taxDuration,
+            taxDuration: TAX_DURATION,
             pools: pools,
             v2Router: routerAddress,
             antiFarmerDuration: tokenConfig.antiFarmerDuration

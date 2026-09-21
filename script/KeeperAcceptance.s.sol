@@ -69,7 +69,6 @@ contract KeeperAcceptance is Script {
             sellTax: uint16(vm.envOr("ACCEPTANCE_SELL_TAX_BPS", uint256(1000))),
             // 金库模式下 Coordinator 会把该字段覆盖为金库地址，这里只需非零
             feeRecipient: msg.sender,
-            taxDuration: vm.envOr("ACCEPTANCE_TAX_DURATION", uint256(7 days)),
             antiFarmerDuration: vm.envOr("ACCEPTANCE_ANTI_FARMER_DURATION", uint256(0)),
             liqExpectedOutputAmount: 0
         });

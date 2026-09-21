@@ -2,9 +2,9 @@
 
 > 主网对接请使用 [主网专用文档](frontend-integration-mainnet.md)。两份文档的网络、部署地址和时间参数彼此独立维护。
 
-> 源码版本：**2026-09-20 BSC 测试网部署版**，包含异步税费清算、自动回购金库、Keeper 权限、配置方一次性锁、份额/余额守恒校验、Pair 预创建复用与单边储备安全加池，以及 `refundTo` 合约钱包退款。
-> 部署验证：`broadcast/Deploy.s.sol/97/run-latest.json` 共 11 笔回执，全部 `status=0x1`；Router、工厂关联、Keeper/Admin 权限和七个地址的链上字节码均已独立读取核验。交易哈希见附录 A。
-> ✅ 新部署端到端冒烟测试已完成：税费异步清算、BNB 入金库、自动回购与销毁均已在 BSC 测试网持续运行；证据见 `docs/keeper-cloudflare.md`。✅ BscScan 源码发布已完成（2026-09-20 逐合约核验，7 个合约均为 `already verified`）。不得引用下方“历史旧部署记录”作为本次部署证据。
+> 源码版本：**2026-09-21 待部署版**。`TokenConfig` 已移除 `taxDuration`，由 Coordinator 固定注入 `100 * 365 days`；`antiFarmerDuration` 仍由用户配置，但上限为 365 天。
+> ⚠️ 当前源码尚未重新部署。2026-09-20 的测试网地址仅作历史记录，其 Coordinator 仍使用旧的 9 字段 `TokenConfig`，**不得绑定本文的新 8 字段 ABI**。新地址必须以新的广播产物与链上核验结果为准。
+> 本仓库不再维护前端 SDK。DApp 只维护实际调用所需的最小 ABI；本文 §9 给出可直接裁剪的示例。
 
 ---
 
@@ -35,11 +35,13 @@
 | RPC（WebSocket） | `wss://bsc-testnet-rpc.publicnode.com` |
 | 区块浏览器 | `https://testnet.bscscan.com` |
 
-### 1.2 本平台合约（当前链上部署，接线已验证）
+### 1.2 上一版测试网部署（历史记录，与当前源码 ABI 不兼容）
+
+下列地址部署于 2026-09-20，已完成当时版本的接线与链上验证，但**不包含本次 8 字段 `TokenConfig` 改动**。当前源码对应地址均为 `PENDING_DEPLOYMENT`。
 
 | 合约 | 地址 | 前端是否直接交互 |
 |---|---|---|
-| **CoordinatorFactory（唯一入口）** | `0x9a7594114f4b79544f7CA00FBd1E902C556BbC47` | ✅ 主要交互对象 |
+| **CoordinatorFactory（旧入口）** | `0x9a7594114f4b79544f7CA00FBd1E902C556BbC47` | ❌ 仅供历史核验，不得绑定当前 ABI |
 | FlapTaxTokenV3 实现（模板） | `0x52c01A724b80d2E408131466802ec05FeB5557da` | ❌ 仅克隆实现，不直接调用 |
 | TokenFactory | `0xfE39e0fe0CbE1c2A042c337880161B9aeF2D2Eb9` | ❌ 由 Coordinator 调度 |
 | PRESALE 模板 | `0x9B1c041844e2334478DC1135cd051A3CbC3bC961` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
@@ -57,16 +59,16 @@
 | Factory V2 | `0x6725F303b657a9451d8BA641348b6761A6CC7a17` |
 | WBNB | `0xae13d989daC2F0dEbFf460aC112a837C89BAa7cd` |
 
-### 1.4 平台费用（读链获取，勿硬编码）
+### 1.4 平台费用（新部署后读链获取，勿硬编码）
 
-- 发币费 `coordinator.creationFee()` — 当前 **0.005 BNB**
-- 地址预留费 `coordinator.reservationFee()` — 当前 **0.001 BNB**
+- 发币费 `coordinator.creationFee()` — 2026-09-20 旧部署为 **0.005 BNB**
+- 地址预留费 `coordinator.reservationFee()` — 2026-09-20 旧部署为 **0.001 BNB**
 
 两处均为"多退少不补"：`msg.value > 费用` 时超额部分**同交易自动退回**（事件 `ExcessRefunded`）。
 
 ### 1.5 ABI 获取
 
-单一信息源，合约更新后自动同步，**勿复制粘贴 ABI 到前端仓库**：
+合约编译产物是 ABI 的单一信息源。项目不再发布 SDK；前端仓库只保留实际使用的最小 ABI，并在每次合约部署后从已核验产物同步：
 
 ```bash
 # 方式一：forge inspect（推荐，按合约名，输出 JSON 含 abi + bytecode）
@@ -86,7 +88,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 > python3 -c "import json;json.dump(json.load(open('out/Presale.sol/PRESALE.json'))['abi'],open('presale.abi.json','w'),indent=2)"
 > ```
 >
-> ⚠️ `out/` 在 .gitignore 中且会被 `forge clean` 清空——前端构建流程不要依赖仓库内拷贝，应在 CI 里执行 `forge build` / `forge inspect` 动态生成，或由后端发布 ABI 包。
+> ⚠️ `out/` 在 `.gitignore` 中且会被 `forge clean` 清空。可在发布流程中执行 `forge build` / `forge inspect`，再将前端真正使用的少量 ABI 条目提交到前端仓库；不要从旧地址或旧产物复制整份 ABI。
 
 前端主要需要的 ABI：`CoordinatorFactory`（发币/配置入口）、`PRESALE`（每个代币的托管仓实例，地址由 `tokenPresales(token)` 查得）、`FlapTaxTokenV3`（ERC20 + `state()` + `maxSupply()`）、`BuybackVault`（可选回购金库，地址由 `tokenVaults(token)` 查得）、Pancake `IPancakePair`/`IPancakeRouter02`（价格与加池）。
 
@@ -192,7 +194,7 @@ out/FlapTaxTokenV3.sol/FlapTaxTokenV3.json
 
 ## 3. 参数详解
 
-### 3.1 `TokenConfig`（发币配置，9 字段）
+### 3.1 `TokenConfig`（发币配置，8 字段）
 
 ```solidity
 struct TokenConfig {
@@ -203,14 +205,15 @@ struct TokenConfig {
     uint16  sellTax;                 // 卖税 bps，0 ≤ x ≤ 1000
     address feeRecipient;            // 唯一税金收款人（税清算 swap 成 BNB 后到账；各类失败兜底接收）。
                                      // createTokenWithVault 会忽略此字段，覆盖为金库地址
-    uint256 taxDuration;             // 税持续时间（秒），开盘/领取时开始计时，到期自动 TaxFree
-    uint256 antiFarmerDuration;      // 防夹持续时间（秒），必须 ≤ taxDuration，可为 0
+    uint256 antiFarmerDuration;      // 防夹持续时间（秒），0…365 days
     uint256 liqExpectedOutputAmount; // 清算方向调节参考值（BNB wei）；0 = 关闭该特性，建议前端固定传 0
 }
 ```
 
 注意事项：
 - `buyTax`/`sellTax` 超过 1000 bps 直接 revert（`InvalidPrice` 之外的 `TokenFactory` 校验），前端滑杆限制 0–10%
+- 税期不再是发币参数。Coordinator 固定使用 `TAX_DURATION() == 100 * 365 days`，从开盘/领取时开始计时；在产品生命周期内可视为永久收税，但合约语义仍是在 100 年后进入 TaxFree
+- `antiFarmerDuration` 可为 0，最大 `MAX_ANTI_FARMER_DURATION() == 365 days`；超过上限会 revert `InvalidAntiFarmerDuration()`
 - 代币固定 **18 位小数**、固定总量（读 `token.maxSupply()`，**前端严禁硬编码**；当前部署即 `1e9 ether` = 10 亿枚主网口径，以读链为准——更早的 100 万枚口径代币属于旧部署（判定见 7.8 的 `tokenExists`））
 - 代币支持 ERC20Permit（`permit` 签名授权可用）
 
@@ -560,10 +563,10 @@ await wallet.writeContract({
 
 买入侧两个 swap 变体技术上均可用（买入税在"池 → 买方"输出端扣，池子流出量足额），统一用 Supporting 变体最省心。
 
-**税率是动态的，随时间归零**：`taxDuration`（发币配置）到期后代币自动进入 TaxFree（税率归零），前端每次报价都实时读 `buyTaxRate()/sellTaxRate()`，勿缓存——税过期后公式自然算出全额，无需特判。
+**税期由平台固定**：Coordinator 为每个新代币写入 100 年税期，DApp 不展示也不提交 `taxDuration`。税期最终到达后代币仍会自动进入 TaxFree（税率归零）；前端每次报价都应实时读 `buyTaxRate()/sellTaxRate()`，勿缓存。
 
 **体验与 gas 注意**：
-- 卖向主池的转账会触发税仓清算检查：累计税款达到清算阈值（`liquidationThreshold()`，动态调整）时，该笔卖出同交易附带"税代币 swap 成 BNB → feeRecipient"——gas 明显上浮、且清算本身向同池卖出带来轻微额外价格影响。偶发、预期内，钱包端 gas 估算需容忍
+- 买卖产生的税代币先进入独立 `TaxProcessor`。用户交易不内联兑换；平台 keeper 达到安全条件后分批清算为 BNB 并转给 `feeRecipient`（金库模式则转入 vault）
 - 报价页的扣税展示口径见 7.3 节（买入实收/卖出到池），此处不重复
 - anti-farmer 防夹窗口内买卖税率与常规一致（防的是夹子机器人的换汇路径，不额外惩罚普通买卖）
 
@@ -582,6 +585,7 @@ await wallet.writeContract({
 | `0x535b7470` | InsufficientCreationFee | msg.value < creationFee | 发币费不足 |
 | `0xe2592aed` | EmptyTokenName | name 为空 | 请填写代币名 |
 | `0x19c7070a` | EmptyTokenSymbol | symbol 为空 | 请填写符号 |
+| `0x393b5541` | InvalidAntiFarmerDuration | antiFarmerDuration 超过 365 天 | 防夹持续时间不能超过 365 天 |
 | `0x259ba1ad` | TokenNotRegistered | setupPresale 的 token 非本平台创建 | 代币不存在 |
 | `0x57deb26a` | NotTokenCreator | 非创建者调 setupPresale | 仅创建者可操作 |
 | `0x11b61b6a` | AlreadyConfigured | 重复 setupPresale | 预售条款一次性配置，不可修改 |
@@ -717,7 +721,7 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 ### 7.5 时间相关参数用秒
 
-`taxDuration` / `antiFarmerDuration` / `vestingDelay` / `startTime` / `duration` 全部为**秒级时间戳/时长**，前端用 `ethers.toUtf8`/`BigInt` 传整秒，勿传毫秒。`duration` 是**时长**（非绝对时间戳）：`endTime` 在 `openPresale()` 那笔交易内由合约锚定，前端无法也无需预填。
+`antiFarmerDuration` / `vestingDelay` / `startTime` / `duration` 全部为**秒级时间戳/时长**，前端用 `BigInt` 传整秒，勿传毫秒。`taxDuration` 已由 Coordinator 固定为 100 年，不再由前端传入。`duration` 是**时长**（非绝对时间戳）：`endTime` 在 `openPresale()` 那笔交易内由合约锚定，前端无法也无需预填。
 
 ### 7.6 金额单位
 
@@ -774,6 +778,8 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 | `getCreatorTokenCount(creator)` / `getTotalTokenCount()` | uint256 | 分页总数 |
 | `tokenExists(token)` | bool | 合法性校验 |
 | `creationFee()` / `reservationFee()` | uint256 | 费用预填 |
+| `TAX_DURATION()` | uint256 | 平台固定税期，恒为 `100 * 365 days` |
+| `MAX_ANTI_FARMER_DURATION()` | uint256 | 防夹时长上限，恒为 `365 days` |
 | `creatorBps()` / `poolBps()` / `presaleBps()` | uint256 | 当前分配比例（bps，发币表单与详情页动态读取，勿硬编码 30/20/50） |
 | `factoryEnabled()` | bool | 平台开关 |
 | `tokenAddressReserver(predicted)` | address | 靓号预留权属查询 |
@@ -832,13 +838,18 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 ## 9. viem 快速上手
 
+> 当前源码尚未部署。下面的零地址是刻意的安全占位符；完成新部署并核验后，必须从广播产物替换 `COORDINATOR`、`TOKEN_FACTORY` 与 `IMPL`，不得回填 2026-09-20 的旧地址。
+
 ```ts
-import { createPublicClient, createWalletClient, custom, http, webSocket, parseAbi, formatUnits } from "viem";
+import {
+  concat, createPublicClient, createWalletClient, custom, formatUnits, http,
+  keccak256, pad, parseAbi, parseEther, toHex, webSocket,
+} from "viem";
 import { bscTestnet } from "viem/chains";
 
 const RPC  = "https://bsc-testnet-rpc.publicnode.com";
 const WSRPC = "wss://bsc-testnet-rpc.publicnode.com";
-const COORDINATOR = "0x9a7594114f4b79544f7CA00FBd1E902C556BbC47";
+const COORDINATOR = "0x0000000000000000000000000000000000000000"; // PENDING_DEPLOYMENT
 
 const client   = createPublicClient({ chain: bscTestnet, transport: http(RPC) });
 const wsClient = createPublicClient({ chain: bscTestnet, transport: webSocket(WSRPC) });
@@ -846,14 +857,16 @@ const wallet   = createWalletClient({ chain: bscTestnet, transport: custom(windo
 
 // ---------- ABI（parseAbi 人类可读形式，按需声明用到的条目即可） ----------
 const coordinatorAbi = parseAbi([
-  "function createToken((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt) payable returns (address token, address presale)",
-  "function createTokenWithVault((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 taxDuration, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt, (uint8 mode, uint8 trigger, uint64 firstExecuteAt, uint64 intervalSeconds, uint256 triggerAmount, uint256 buybackAmount) buyback) payable returns (address token, address presale, address vault)",
+  "function createToken((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt) payable returns (address token, address presale)",
+  "function createTokenWithVault((string name, string symbol, string meta, uint16 buyTax, uint16 sellTax, address feeRecipient, uint256 antiFarmerDuration, uint256 liqExpectedOutputAmount) tokenConfig, bytes32 salt, (uint8 mode, uint8 trigger, uint64 firstExecuteAt, uint64 intervalSeconds, uint256 triggerAmount, uint256 buybackAmount) buyback) payable returns (address token, address presale, address vault)",
   "function tokenVaults(address) view returns (address)",
   "function creationFee() view returns (uint256)",
+  "function TAX_DURATION() view returns (uint256)",
+  "function MAX_ANTI_FARMER_DURATION() view returns (uint256)",
   "function tokenPresales(address) view returns (address)",
   "event TokenPresalePairCreated(address indexed token, address indexed presale, address indexed creator, uint256 totalSupply)",
   // 声明了 error，viem 会自动解码 revert
-  "error InsufficientCreationFee()", "error FactoryDisabled()",
+  "error InsufficientCreationFee()", "error FactoryDisabled()", "error InvalidAntiFarmerDuration()",
 ]);
 const presaleAbi = parseAbi([
   "function claimAllTokens()", "function subscribe() payable",
@@ -887,8 +900,8 @@ const buybackVaultAbi = parseAbi([
 // ---------- ① 发币（纯发币模式） ----------
 // 8888-only 体系：salt 必须是"搜好的尾号 8888 盐"（零盐/非 8888 盐直接 revert，
 // 见 2.4）。最小可行搜盐示例（生产建议 Web Worker 内跑并带随机种子派生）：
-const TOKEN_FACTORY = "0xfE39e0fe0CbE1c2A042c337880161B9aeF2D2Eb9";
-const IMPL = "0x52c01A724b80d2E408131466802ec05FeB5557da"; // tokenFactory.flapImplementation()
+const TOKEN_FACTORY = "0x0000000000000000000000000000000000000000"; // PENDING_DEPLOYMENT
+const IMPL = "0x0000000000000000000000000000000000000000"; // tokenFactory.flapImplementation()
 const INIT_CODE = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73"
   + IMPL.toLowerCase().slice(2) + "5af43d82803e903d91602b57fd5bf3";
 function predict(salt: bigint) {                       // EIP-1014 / EIP-1167
@@ -908,7 +921,7 @@ const hash = await wallet.writeContract({
   args: [{
     name: "MyToken", symbol: "MTK", meta: "ipfs://Qm...",
     buyTax: 200, sellTax: 300, feeRecipient: account,
-    taxDuration: 365n * 86400n, antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
+    antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
   }, salt],
   value: fee,   // 多退少不补
 });
@@ -923,7 +936,7 @@ await wallet.writeContract({
   args: [{
     name: "MyToken", symbol: "MTK", meta: "ipfs://Qm...",
     buyTax: 200, sellTax: 300, feeRecipient: account, // 会被覆盖为 vault
-    taxDuration: 365n * 86400n, antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
+    antiFarmerDuration: 86400n, liqExpectedOutputAmount: 0n,
   }, salt, {
     mode: 0, trigger: 0,              // Token 买毁 + 按时间
     // UI 显示 2026-09-19 16:06 (UTC+8)，提交绝对 Unix 秒
@@ -969,9 +982,9 @@ try { ... } catch (e) {
 
 ---
 
-## 附录 A：部署核验记录（当前部署）
+## 附录 A：2026-09-20 旧版部署核验记录（历史）
 
-**部署交易**：`forge script script/Deploy.s.sol:Deploy --rpc-url <BSC testnet RPC> --sender <deployer> --interactive --legacy --broadcast --slow`。权威广播产物为 `broadcast/Deploy.s.sol/97/run-latest.json`，部署者 `0x463c...21D3`。2026-09-20 共 11 笔交易全部成功（7 笔 CREATE + 4 笔配置/授权）：
+以下记录证明 2026-09-20 旧版本当时部署正确，不代表当前源码已部署，也不得向这些地址发送新的 8 字段 `TokenConfig`。当时的部署命令为 `forge script script/Deploy.s.sol:Deploy --rpc-url <BSC testnet RPC> --sender <deployer> --interactive --legacy --broadcast --slow`，部署者 `0x463c...21D3`；共 11 笔交易全部成功（7 笔 CREATE + 4 笔配置/授权）：
 
 | 操作 | 交易 | 地址/目标 | 回执 |
 |---|---|---|---|
@@ -997,9 +1010,9 @@ try { ... } catch (e) {
 - `coordinator.routerAddress == tokenFactory.routerAddress == 0xD99D...50D1`
 - BscScan 源码发布：**已完成**（2026-09-20 逐合约核验，7 个测试网合约均为 `already verified`：`FlapTaxTokenV3` 实现 `0x52c0…57da`、`TokenFactory`、`PRESALE` 模板 `0x9B1c…C961`、`PresaleFactory`、`CoordinatorFactory`、`BuybackVault` 实现 `0x4390…D2FD`、`BuybackVaultFactory`）；仍不得把链上字节码存在等同于源码验证
 
-### 历史旧部署冒烟记录（不可作为当前部署证据）
+### 更早的历史部署冒烟记录（不可作为当前源码部署证据）
 
-以下记录来自被本次部署替换的旧测试网合约，仅保留作历史业务参考。当前部署必须重新完成创建金库币、税费累积、Keeper 清算、Token/LP 回购及故障恢复验收。
+以下记录来自被 2026-09-20 部署替换的更早测试网合约，仅保留作历史业务参考。当前源码的新部署必须重新完成创建金库币、税费累积、Keeper 清算、Token/LP 回购及故障恢复验收。
 
 **历史冒烟测试**——角色：创建者（张三 `0x027D...B421`）、散户（李四 `0xf999...f25Be`）、路人（部署者钱包 `0x463c...21D3`，非 owner 非参与者）。所有测试币地址尾号 8888：
 
