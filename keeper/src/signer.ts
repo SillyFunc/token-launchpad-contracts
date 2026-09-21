@@ -231,7 +231,7 @@ export class SignerDurableObject extends DurableObject<Env> {
 
     const asset = await getAsset(this.env.DB, config.chainId, getAddress(job.token));
     if (!asset || asset.status !== "active") return { jobId: job.id, status: "skipped", detail: "asset is not active" };
-    const expectedTarget = job.kind === "tax" ? asset.tax_processor : asset.vault;
+    const expectedTarget = job.kind === "tax" || job.kind === "liquidity" ? asset.tax_processor : asset.vault;
     if (!expectedTarget || getAddress(expectedTarget) !== getAddress(job.target)) {
       return { jobId: job.id, status: "skipped", detail: "job target does not match the D1 asset registry" };
     }

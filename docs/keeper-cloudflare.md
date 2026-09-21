@@ -7,6 +7,7 @@
 | 项目 | BSC 测试网 | BSC 主网 |
 |---|---|---|
 | chainId | `97` | `56` |
+| Coordinator | `PENDING_DEPLOYMENT`（`0x8b678…79C1` 为上一版单通道） | 以主网最新广播与链上核验结果为准 |
 | Keeper | `0x9f87b1973361b23387D7F1b536484543a5ea1eFB` | 必须另建生产专用钱包，不复用测试网私钥 |
 | Pancake V2 Router | `0xD99D1c33F9fC3444f8101754aBC46c52416550D1` | `0x10ED43C718714eb63d5aA57B78B54704E256024E` |
 | 读取 RPC | BNB Chain 测试网公共 RPC | 独立公共/免费 RPC |
@@ -37,8 +38,9 @@ Worker 运行时的本地时区是 **UTC**，不是部署者机器或浏览器�
 ### 3.1 资产生命周期
 
 - 交易税先留在代币合约；达到代币模板动态阈值时，由代币转入该币独立的 `TaxProcessor`。
-- Keeper 调用 `processPendingTax`，TaxProcessor 把一小批税代币换成 WBNB，再解包成 BNB 打给固定 `feeReceiver`。
-- 普通代币的固定收款人是创建时配置的税费接收方；带金库代币的固定收款人是对应 `BuybackVault`。
+- Keeper 调用 `processPendingTax`。TaxProcessor 先按固定 bps 拆成市场、销毁、LP、分红四份：销毁份额直接送 `0xdead`；市场、LP 的兑换半边和分红份额合并卖出，再按实际 WBNB 到账量分账。
+- 市场份额发给创建时固定的钱包；带金库代币则发给对应 `BuybackVault`。分红份额存入该币的 `Dividend`；失败时留在独立账本，可由 `dispatch()` 重试。
+- LP 的代币半边和 WBNB 半边分别留账。Keeper 调用 `addPendingLiquidity` 时按历史锚点给出 quote 上下界与最小 LP；TaxProcessor 以 Pair 实际收到的税后 token 配比，并把 LP 直接铸给 `0xdead`。
 - 金库达到创建时锁定的时间/余额条件后，Keeper 调用 `executeBuyback`。Token 模式买入后发送到 `0xdead`；LP 模式买入并铸造 LP 到 `0xdead`，LP 路径失败时同一交易回退为 Token 买毁。
 - Keeper 不接收税金、回购资产或奖励，只支付 Gas。金库不存在创建者提款入口。
 
@@ -65,8 +67,8 @@ Worker 运行时的本地时区是 **UTC**，不是部署者机器或浏览器�
 - `amountOutMin` 同时取“即时报价减 1%”和“历史锚点报价减 1%”中的较高值。
 - 锚点样本会剔除储备为 0 的记录：代币先创建、后加池时每分钟都会写入零储备样本，它们不含价格信息，计入中位数会把锚点拉到 0，让 Keeper 在已有足够有效样本时仍然不成交（表现是静默不成交、不是报错）。
 - 实际生效的价格门槛比 `3%` 更紧：`amountOutMin` 取“锚点价 −1%”，而单次清算卖出池内 `0.3%` Token 会按恒定乘积把价格压低约 `0.54%`。所以 Keeper 是**间歇式清算**——成功一笔后要等锚点中位数（窗口内最近 15 个样本）跟上，才会清算下一笔，实测约 8~10 分钟一笔。测试网实测：`pendingTax` 从 `4.73e25` 清到 `5.0e24` 用了约 1.5 小时，全程无告警、无资金滞留风险（税一直在 TaxProcessor）。要提高吞吐可调 `SLIPPAGE_BPS`（100→300，接受更差成交价）或降低 `TAX_MAX_RESERVE_BPS`（30→10，单笔价格冲击更小、清算更频繁但 gas 更多）。
-- 税费清算按当前卖税折算 Pair 实际到账量；回购按当前买税折算金库实际到账量，避免把名义输入误当成真实成交输入。
-- 单次税费清算最多使用池内 Token 储备的 `0.3%`。金库合约自身还限制单笔回购不超过 WBNB 储备的 `1%`。
+- 税费清算只对四通道中实际参与 swap 的份额报价，并按当前卖税折算 Pair 实际到账量；自动加池同样按二次卖税后的 Pair 实收量配比。回购按当前买税折算金库实际到账量，避免把名义输入误当成真实成交输入。
+- 单次税费清算批次和单次自动加池的名义 Token 均最多使用池内 Token 储备的 `0.3%`。金库合约自身还限制单笔回购不超过 WBNB 储备的 `1%`。
 - BSC 主网配置强制要求 `SEND_RPC_URL != READ_RPC_URL`；发送端使用 BNB Chain 文档列出的免费私有 RPC，避免把签名交易先暴露到公共 mempool。
 
 这套约束不能保证任意 Meme 币拥有“真实外部公允价”；任意新币通常没有 Chainlink 等独立预言机。历史采样的目标是阻断同交易闪电操纵和明显短时拉盘，不是替代完整预言机。偏离时选择不成交，资金继续留在原合约。
@@ -104,7 +106,7 @@ KEEPER_ADDRESS=0x9f87b1973361b23387D7F1b536484543a5ea1eFB
 ROUTER_ADDRESS=0xD99D1c33F9fC3444f8101754aBC46c52416550D1
 ```
 
-先省略 `--broadcast` 做模拟；确认 11 笔交易、Keeper 授权和 Gas 预算正确后，再执行真实广播：
+先省略 `--broadcast` 做模拟；确认 15 笔交易、Keeper 授权、两个克隆实现与两个辅助工厂接线和 Gas 预算正确后，再执行真实广播：
 
 ```text
 forge script script/Deploy.s.sol:Deploy --rpc-url <BSC testnet RPC> --sender <deployer address> --account launchpad-testnet-deployer --legacy --broadcast --slow
@@ -112,11 +114,20 @@ forge script script/Deploy.s.sol:Deploy --rpc-url <BSC testnet RPC> --sender <de
 
 命令会在本机询问 keystore 密码。不要把密码写入仓库、环境变量或聊天记录。
 
-执行部署后，必须从 `broadcast/Deploy.s.sol/97/run-latest.json` 取得并链上核验新 `CoordinatorFactory` 地址。禁止把当前旧部署地址绑定到新 ABI。
+2026-09-21 的 `0x8b678ed56926B975C9d926bE12778d9F17e479C1` 是上一版单通道 Coordinator。四通道源码部署前保持 `PENDING_DEPLOYMENT`，不得把旧地址与新 ABI 混用。
 
 不带 `--broadcast` 的 `forge script` 仅做模拟，不会生成 `script/deployments/97.json`；部署地址文件只允许由真实广播运行产生。
 
-BscScan 源码发布需要一个免费的 API key。当前机器未配置 `BSCSCAN_API_KEY`，因此这一步不能由仓库自行完成，也不得把 key 提交到 Git。配置后应按广播产物逐个执行 `forge verify-contract --chain 97 --guess-constructor-args --watch <address> <source:contract>`；七个地址全部显示 Verified 后，再更新 `docs/frontend-integration.md` 的发布状态。
+BscScan 源码发布需要一个免费的 API key，且不得把 key 提交到 Git。真实广播写入新地址后，可用仓库脚本从 `script/deployments/97.json` 读取并依次验证十个合约：
+
+```bash
+read -rsp "BscScan API key: " BSCSCAN_API_KEY && echo
+export BSCSCAN_API_KEY
+bash script/verify-deployment-97.sh
+unset BSCSCAN_API_KEY
+```
+
+十个部署合约全部显示 Verified 后，再更新 `docs/frontend-integration.md` 的发布状态。脚本依赖 `jq`，并会在地址缺失、格式错误或任一验证失败时立即停止。
 
 ### 阶段 C：创建 Cloudflare 免费项目
 
@@ -136,7 +147,7 @@ pnpm db:migrate:remote
 
 ### 阶段 D：录入 Secrets
 
-测试网的公开 `READ_RPC_URL`、`SEND_RPC_URL` 与 `COORDINATOR_ADDRESS` 已写入 `keeper/wrangler.jsonc`。以下两个敏感值仍必须通过本机终端录入，不会写入 Git：
+测试网的公开 `READ_RPC_URL`、`SEND_RPC_URL` 已写入 `keeper/wrangler.jsonc`；其中旧 `COORDINATOR_ADDRESS=0x8b678…79C1` 仅用于继续服务上一版代币。四通道部署后必须替换为新广播地址并执行阶段 E 的 `pnpm run deploy`。以下两个敏感值仍通过本机终端录入，不会写入 Git：
 
 ```text
 pnpm wrangler secret put KEEPER_PRIVATE_KEY
@@ -155,6 +166,8 @@ pnpm run deploy
 
 `pnpm deploy` 会被 pnpm 内置的 `deploy` 命令拦截并报 `ERR_PNPM_CANNOT_DEPLOY`，必须写成 `pnpm run deploy`（等价于 `pnpm run deploy:testnet`）。
 
+> **切换 Coordinator 时的 D1 语义**：修改 `COORDINATOR_ADDRESS` 不会自动清空 D1。`assets` 按 `chain_id + token` 保存，因此直接重新部署会继续处理数据库中的旧部署代币，同时只从新 Coordinator 发现新代币；这种方式可保持旧代币的自动化连续性，但旧 Coordinator 必须继续给同一 Keeper 保留 `KEEPER_ROLE`。如果测试网只需要服务新部署，应先备份 D1，再由负责人明确清理旧 `assets`、对应 `price_samples` 和 `discovery_cursor:97`；这是破坏性运维动作，不得在未确认保留策略时执行。
+
 测试网 Worker 地址：`https://sillyfunc-launchpad-keeper-testnet.wildfunc.workers.dev`。
 
 部署后依次验证：
@@ -164,9 +177,10 @@ pnpm run deploy
 3. 创建带金库测试币、完成开盘并制造应税交易；
 4. 确认 TaxProcessor 先累积税代币，而不是在用户卖出交易里内联兑换；
 5. 等待至少 8 分钟形成历史样本；
-6. 确认 Keeper 自动提交税费清算，BNB 进入金库；
-7. 满足金库条件后确认自动回购与销毁/LP 销毁；
-8. 检查 D1 任务、交易和告警记录，并核对链上事件。
+6. 确认 Keeper 自动提交税费清算；核对市场、直接销毁、LP 双边账本和 Dividend 四项；
+7. 确认 Keeper 自动提交 `addPendingLiquidity`，LP 仅铸给 `0xdead`；
+8. 满足金库条件后确认自动回购与销毁/LP 销毁；
+9. 检查 D1 的 `tax`、`liquidity`、`buyback` 任务、交易和告警记录，并核对链上事件。
 
 第 3~7 步由 `script/KeeperAcceptance.s.sol` 提供可复现的验收路径，私钥只在本机 keystore 中：
 
@@ -211,12 +225,15 @@ pnpm wrangler d1 execute DB --remote --json --command "SELECT block_number,sampl
 |---|---|---|
 | 即时价格偏离历史锚点 > 3% | 不签名、不发送，资金原地保留 | 已验证（本地单元测试 + BSC fork 集成：基线计划正常构建，真实卖出池内 2% Token 后偏离达 3.49%，计划返回 `null`、Keeper nonce 未变、未发送任何交易） |
 | 买税/卖税存在 | 最低输出按实际到账而非名义输入计算 | 已验证（本地单元测试 + Solidity 回归；BSC fork 实池清算实际到账高于最低输出） |
+| 四通道清算 | 只对实际 swap 份额报价；直接销毁、LP 留存、市场与分红账本总和守恒 | 已验证（Solidity 单元测试 + Keeper 规划测试） |
+| Dividend 暂无份额或存款失败 | 分红 WBNB 留在待处理账本，`dispatch()` 可重试且不重复记账 | 已验证（Solidity 失败注入测试） |
+| 自动加池遇二次卖税 | 以 Pair 实际收到的 Token 计算 quote，LP 仅铸给 `0xdead` | 已验证（状态化 AMM 测试：10% 二次卖税、实际到账、储备变化与 LP 销毁） |
 | 税费待处理量过大 | 单次最多清算 Pair Token 储备的 0.3% | 已验证（本地执行计划测试；BSC fork 实测 amountIn = 储备的 0.3%） |
 | Keeper 端到端执行（清算 → 入金库 → 回购销毁） | 报价、最低输出、模拟、签名、广播全部成功，回购代币销毁到 `0xdead` | 已验证（BSC fork 实池：清算 1.36e24 税代币、金库 +3.2e14 wei、回购 0.001 BNB 销毁 3.599e24 代币，交易均 `0x1`） |
 | LP 回购 | 普通买入与 LP 半仓兑换分别设置最低输出 | 已验证（本地执行计划测试 + BSC fork 实池：Keeper 规划出的 LP 侧最低输出 `1.097e24` 被满足，LP `2.06e19` 铸给 `0xdead`，`totalLpBurned` 与 `0xdead` 持仓一致）；测试网实池复验建议并入主网上线前演练 |
 | RPC batch 乱序 | 按 JSON-RPC id 恢复正确顺序 | 已验证（本地单元测试） |
 | RPC 返回错误或 HTTP 503 | 显式失败，不把错误当作结果 | 已验证（本地单元测试） |
-| 管理令牌缺失或错误 | 管理接口安全失败并返回 401，健康检查仍可用 | 已验证（已部署 Worker：缺失令牌与格式合法但值错误的令牌均返回 401、`/health` 返回 `ok:true`；携带有效令牌返回链 97、Coordinator `0x9a75…bC47`、Keeper `0x9f87…1eFB`、余额与运行/交易/告警记录，均与配置和 D1 一致） |
+| 管理令牌缺失或错误 | 管理接口安全失败并返回 401，健康检查仍可用 | 上一版已验证；切换到待部署的四通道 Coordinator 后必须重新部署并通过 `/health`、`/admin/status` 复验 |
 | 部署与 Cron 连续性 | 每分钟触发一次 Workflow，环境校验通过，运行记录无失败 | 已验证（**截至 2026-09-20 07:52Z / 本地 15:52 快照**：D1 共 249 条运行记录、0 失败、0 未解决告警；记录数持续增长，最新值请查 D1） |
 | 私钥与 Keeper 地址不匹配 | 拒绝签名 | 已验证（本地单元测试） |
 | BSC Legacy 交易签名 | 可恢复出配置的 Keeper 地址 | 已验证（本地单元测试） |

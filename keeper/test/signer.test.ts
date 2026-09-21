@@ -37,6 +37,10 @@ const mock = vi.hoisted(() => {
     reserveWbnb: 10n ** 17n,
     poolState: [2, 500, 1000, true, 10_000_000n * 10n ** 18n, 1_700_003_600, 0],
     pendingTax: 10n ** 24n,
+    feeConfig: [10_000, 0, 0, 0, 0, true, 0, ADDRESSES.wbnb],
+    lpTokenBalance: 0n,
+    lpQuoteBalance: 0n,
+    pairTotalSupply: 1_000_000n,
     nonce: "0x5" as Hex,
     latestNonce: "0x5" as Hex,
     gasPrice: "0x3b9aca00" as Hex,
@@ -61,6 +65,14 @@ const mock = vi.hoisted(() => {
         return state.poolState;
       case "pendingTaxTokens":
         return state.pendingTax;
+      case "feeConfigV2":
+        return state.feeConfig;
+      case "lpTokenBalance":
+        return state.lpTokenBalance;
+      case "lpQuoteBalance":
+        return state.lpQuoteBalance;
+      case "totalSupply":
+        return state.pairTotalSupply;
       default:
         throw new Error(`unexpected contract call ${functionName}`);
     }
@@ -177,7 +189,7 @@ withSqlite("signer durable object", () => {
     CHAIN_ID: "97",
     READ_RPC_URL: "https://rpc.invalid",
     SEND_RPC_URL: "https://rpc.invalid",
-    COORDINATOR_ADDRESS: "0x9a7594114f4b79544f7CA00FBd1E902C556BbC47",
+    COORDINATOR_ADDRESS: "0x8b678ed56926B975C9d926bE12778d9F17e479C1",
     KEEPER_ADDRESS: KEEPER,
     KEEPER_PRIVATE_KEY: KEEPER_KEY,
     DB: db,

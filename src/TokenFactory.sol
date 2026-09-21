@@ -25,7 +25,12 @@ struct TokenConfig {
     string meta; // 代币描述/元数据 IPFS CID（对齐 IFlapTaxTokenV3.InitParams.meta）
     uint16 buyTax; // 买税 bps（上限 MAX_TAX_BPS = 1000 即 10%）
     uint16 sellTax; // 卖税 bps（上限 MAX_TAX_BPS = 1000 即 10%）
-    address feeRecipient; // 唯一税金收款人（税金清算 swap 成 BNB 后接收；也是各类失败路径的兜底接收）
+    address feeRecipient; // 市场通道收款人；启用回购金库时由 Coordinator 覆盖为金库地址
+    uint16 marketBps; // 市场/回购通道占比
+    uint16 deflationBps; // 直接销毁通道占比
+    uint16 lpBps; // 自动加池通道占比
+    uint16 dividendBps; // 持币分红通道占比（四项之和必须为 10000）
+    uint256 minimumShareBalance; // 参与分红所需的最小持币量；未启用分红时必须为 0
     uint256 antiFarmerDuration; // 防 farm 税持续时间（秒，平台上限由 Coordinator 强制，支持 0）
     uint256 liqExpectedOutputAmount; // 清算参考输出（BNB wei，0 = 关闭方向调节）
 }

@@ -94,12 +94,23 @@ export interface AssetSnapshot {
   reserves: PairSample;
   poolState: PoolStateSnapshot;
   pendingTax: bigint;
+  feeConfig: {
+    marketBps: number;
+    deflationBps: number;
+    lpBps: number;
+    dividendBps: number;
+    feeRate: number;
+    commissionBps: number;
+  };
+  lpTokenBalance: bigint;
+  lpQuoteBalance: bigint;
+  pairTotalSupply: bigint;
   vaultCanExecute: boolean;
   vaultBuybackAmount: bigint;
   vaultMode: number;
 }
 
-export type JobKind = "tax" | "buyback";
+export type JobKind = "tax" | "liquidity" | "buyback";
 
 export interface PlannedJob {
   id: string;

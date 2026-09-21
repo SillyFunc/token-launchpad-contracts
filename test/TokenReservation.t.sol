@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 
 import {Test, Vm, console2} from "forge-std/Test.sol";
 import {Clones} from "src/Clones.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 import {TokenFactory, TokenConfig} from "src/TokenFactory.sol";
 import {
     CoordinatorFactory,
@@ -195,6 +196,7 @@ contract TokenReservationTest is Test {
         PRESALE presaleTemplate = new PRESALE();
         presaleFactory = new PresaleFactory(address(presaleTemplate), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, router.WETH());
 
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
@@ -529,6 +531,11 @@ contract TokenReservationTest is Test {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: address(0xfee1),
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

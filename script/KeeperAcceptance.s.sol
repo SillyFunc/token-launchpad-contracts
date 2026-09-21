@@ -69,6 +69,11 @@ contract KeeperAcceptance is Script {
             sellTax: uint16(vm.envOr("ACCEPTANCE_SELL_TAX_BPS", uint256(1000))),
             // 金库模式下 Coordinator 会把该字段覆盖为金库地址，这里只需非零
             feeRecipient: msg.sender,
+            marketBps: uint16(vm.envOr("ACCEPTANCE_MARKET_BPS", uint256(4_000))),
+            deflationBps: uint16(vm.envOr("ACCEPTANCE_DEFLATION_BPS", uint256(1_000))),
+            lpBps: uint16(vm.envOr("ACCEPTANCE_LP_BPS", uint256(2_000))),
+            dividendBps: uint16(vm.envOr("ACCEPTANCE_DIVIDEND_BPS", uint256(3_000))),
+            minimumShareBalance: vm.envOr("ACCEPTANCE_MINIMUM_SHARE_BALANCE", uint256(10_000 ether)),
             antiFarmerDuration: vm.envOr("ACCEPTANCE_ANTI_FARMER_DURATION", uint256(0)),
             liqExpectedOutputAmount: 0
         });
@@ -110,6 +115,7 @@ contract KeeperAcceptance is Script {
         console2.log("vault:", vault);
         console2.log("pair:", pair);
         console2.log("taxProcessor:", FlapTaxTokenV3(token).taxProcessor());
+        console2.log("dividend:", FlapTaxTokenV3(token).dividendContract());
         console2.log("creator token balance:", IERC20(token).balanceOf(msg.sender));
         _logState(artifact);
         console2.log("next: wait >= 8 minutes, then run status() and read D1 keeper_runs/transactions");
@@ -230,9 +236,11 @@ contract KeeperAcceptance is Script {
         console2.log("pair reserve0:", uint256(reserve0));
         console2.log("pair reserve1:", uint256(reserve1));
         console2.log("token contract tax balance:", IERC20(artifact.token).balanceOf(artifact.token));
-        console2.log(
-            "pendingTaxTokens:", PendingTaxLike(FlapTaxTokenV3(artifact.token).taxProcessor()).pendingTaxTokens()
-        );
+        PendingTaxLike processor = PendingTaxLike(FlapTaxTokenV3(artifact.token).taxProcessor());
+        console2.log("pendingTaxTokens:", processor.pendingTaxTokens());
+        console2.log("lpTokenBalance:", processor.lpTokenBalance());
+        console2.log("lpQuoteBalance:", processor.lpQuoteBalance());
+        console2.log("pendingDividendQuote:", processor.pendingDividendQuoteTokenBalance());
     }
 
     function _logVault(Artifact memory artifact) internal view {
@@ -252,4 +260,7 @@ interface TokenFactoryLike {
 
 interface PendingTaxLike {
     function pendingTaxTokens() external view returns (uint256);
+    function lpTokenBalance() external view returns (uint256);
+    function lpQuoteBalance() external view returns (uint256);
+    function pendingDividendQuoteTokenBalance() external view returns (uint256);
 }

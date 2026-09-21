@@ -5,6 +5,7 @@ pragma solidity ^0.8.13;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Clones} from "src/Clones.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 import {
     BuybackVault,
     BuybackConfig,
@@ -29,6 +30,7 @@ import {BuybackVaultFactory, ZeroImplementation, ZeroCoordinator, UnknownVault} 
 import {
     CoordinatorFactory,
     BuybackVaultFactoryNotSet,
+    VaultRequiresMarketChannel,
     ZeroBuybackVaultFactory,
     InvalidBuybackVaultFactory,
     AlreadyConfigured
@@ -649,11 +651,11 @@ contract BuybackVaultTest is Test {
                 quoteToken: wbnb,
                 router: address(router),
                 feeReceiver: address(vault),
-                marketAddress: address(0),
+                marketAddress: address(vault),
                 dividendAddress: address(0),
                 taxToken: address(token),
                 feeRate: 0,
-                marketBps: 0,
+                marketBps: 10_000,
                 deflationBps: 0,
                 lpBps: 0,
                 dividendBps: 0,
@@ -726,6 +728,7 @@ contract BuybackVaultCoordinatorTest is Test {
         PRESALE template = new PRESALE();
         presaleFactory = new PresaleFactory(address(template), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, wbnb);
         coordinator.grantRole(coordinator.KEEPER_ROLE(), keeper);
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
@@ -745,6 +748,11 @@ contract BuybackVaultCoordinatorTest is Test {
             buyTax: 200,
             sellTax: 300,
             feeRecipient: feeReceiver,
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });
@@ -800,6 +808,16 @@ contract BuybackVaultCoordinatorTest is Test {
         vm.expectRevert(BuybackVaultFactoryNotSet.selector);
         vm.prank(creator);
         bare.createTokenWithVault{value: 1 ether}(_tokenConfig(), _vanitySalt("nofactory"), _buyback());
+    }
+
+    function test_createTokenWithVaultRequiresMarketChannel() public {
+        TokenConfig memory config = _tokenConfig();
+        config.marketBps = 0;
+        config.deflationBps = 10_000;
+
+        vm.expectRevert(VaultRequiresMarketChannel.selector);
+        vm.prank(creator);
+        coordinator.createTokenWithVault{value: 1 ether}(config, _vanitySalt("zero-market-vault"), _buyback());
     }
 
     function test_setBuybackVaultFactoryOnce() public {

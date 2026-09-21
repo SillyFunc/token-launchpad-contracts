@@ -29,7 +29,7 @@ vi.mock("../src/config", () => ({
     chainId: 97,
     readRpcUrl: "https://read.invalid/",
     sendRpcUrl: "https://send.invalid/",
-    coordinator: "0x9a7594114f4b79544f7CA00FBd1E902C556BbC47",
+    coordinator: "0x8b678ed56926B975C9d926bE12778d9F17e479C1",
     keeper: KEEPER,
     discoveryPageSize: 8,
     maxAssetsPerRun: 8,

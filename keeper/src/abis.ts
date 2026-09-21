@@ -91,6 +91,13 @@ export const tokenAbi = [
 export const pairAbi = [
   {
     type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "token0",
     stateMutability: "view",
     inputs: [],
@@ -140,6 +147,42 @@ export const taxProcessorAbi = [
   },
   {
     type: "function",
+    name: "feeConfigV2",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "marketBps", type: "uint16" },
+          { name: "deflationBps", type: "uint16" },
+          { name: "lpBps", type: "uint16" },
+          { name: "dividendBps", type: "uint16" },
+          { name: "feeRate", type: "uint16" },
+          { name: "isWeth", type: "bool" },
+          { name: "commissionBps", type: "uint16" },
+          { name: "dividendToken", type: "address" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "lpTokenBalance",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "lpQuoteBalance",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "processPendingTax",
     stateMutability: "nonpayable",
     inputs: [
@@ -148,6 +191,22 @@ export const taxProcessorAbi = [
       { name: "deadline", type: "uint64" },
     ],
     outputs: [{ name: "out", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "addPendingLiquidity",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "tokenAmount", type: "uint256" },
+      { name: "minQuoteAmount", type: "uint256" },
+      { name: "maxQuoteAmount", type: "uint256" },
+      { name: "minLiquidity", type: "uint256" },
+      { name: "deadline", type: "uint64" },
+    ],
+    outputs: [
+      { name: "quoteAmount", type: "uint256" },
+      { name: "liquidity", type: "uint256" },
+    ],
   },
 ] as const;
 

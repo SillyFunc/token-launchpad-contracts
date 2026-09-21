@@ -11,11 +11,16 @@ import {
     NotTokenCreator,
     InvalidMaxBuyPerWallet,
     AlreadyConfigured,
-    InvalidAntiFarmerDuration
+    InvalidAntiFarmerDuration,
+    InvalidTaxDistribution,
+    InvalidMinimumShareBalance
 } from "src/CoordinatorFactory.sol";
 import {TokenFactory, TokenConfig, BuyFeeTooHigh, SellFeeTooHigh} from "src/TokenFactory.sol";
 import {TaxProcessor} from "src/TaxProcessor.sol";
 import {PackedFeeConfig} from "src/lib/interfaces/ITaxProcessor.sol";
+import {IDividend} from "src/lib/dividend/IDividend.sol";
+import {Dividend} from "src/lib/dividend/Dividend.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 import {PresaleFactory, PresaleConfig} from "src/PresaleFactory.sol";
 import {VanitySaltFinder} from "./TokenReservation.t.sol";
 
@@ -89,6 +94,7 @@ contract CoordinatorTest is Test {
         PRESALE template = new PRESALE();
         presaleFactory = new PresaleFactory(address(template), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, router.WETH());
 
         // 测试合约是工厂 admin，直接授予 Coordinator 角色
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
@@ -283,7 +289,7 @@ contract CoordinatorTest is Test {
     }
 
     // ---------------------------------------------------------------------------
-    // 新增：单通道税金接线 / 退款 / 税率上限 / maxBuy 校验
+    // 税金接线 / 退款 / 税率上限 / maxBuy 校验
     // ---------------------------------------------------------------------------
 
     function test_RefundsExcessCreationFee() public {
@@ -295,7 +301,7 @@ contract CoordinatorTest is Test {
         assertEq(creator.balance, balanceBefore - 0.005 ether);
     }
 
-    function test_TaxProcessorSingleReceiverWiring() public {
+    function test_TaxProcessorMarketOnlyWiring() public {
         address token = coordinator.getTokenPresalePairsByCreator(creator, 0, 1)[0].tokenAddress;
         address processor = FlapTaxTokenV3(token).taxProcessor();
 
@@ -305,11 +311,11 @@ contract CoordinatorTest is Test {
         assertEq(TaxProcessor(payable(processor)).router(), address(router));
         assertEq(TaxProcessor(payable(processor)).getQuoteToken(), address(0xAABB)); // WBNB
 
-        // 单通道：无 Dividend、无四通道配置
+        // 默认夹具使用 100% 市场通道，不创建 Dividend。
         assertEq(TaxProcessor(payable(processor)).dividendAddress(), address(0));
         assertEq(FlapTaxTokenV3(token).dividendContract(), address(0));
         PackedFeeConfig memory cfg = TaxProcessor(payable(processor)).feeConfig();
-        assertEq(cfg.marketBps, 0);
+        assertEq(cfg.marketBps, 10_000);
         assertEq(cfg.deflationBps, 0);
         assertEq(cfg.lpBps, 0);
         assertEq(cfg.dividendBps, 0);
@@ -317,6 +323,64 @@ contract CoordinatorTest is Test {
 
         // meta 元数据已透传
         assertEq(FlapTaxTokenV3(token).metaURI(), "ipfs://QmTestMeta");
+    }
+
+    function test_FourChannelCreatesAndWiresDividend() public {
+        TokenConfig memory config = _tokenConfig();
+        config.marketBps = 4_000;
+        config.deflationBps = 1_000;
+        config.lpBps = 2_000;
+        config.dividendBps = 3_000;
+        config.minimumShareBalance = 10_000 ether;
+
+        bytes32 salt = _vanitySalt("four-channel");
+        vm.prank(creator);
+        (address token, address presale) = coordinator.createToken{value: 1 ether}(config, salt);
+        address processor = coordinator.tokenTaxProcessors(token);
+        address dividend = coordinator.tokenDividends(token);
+
+        assertTrue(processor != address(0));
+        assertTrue(dividend != address(0));
+        assertEq(FlapTaxTokenV3(token).taxProcessor(), processor);
+        assertEq(FlapTaxTokenV3(token).dividendContract(), dividend);
+        assertEq(IDividend(dividend).taxToken(), token);
+        assertEq(IDividend(dividend).dividendToken(), router.WETH());
+        assertEq(IDividend(dividend).minimumShareBalance(), 10_000 ether);
+        assertTrue(IDividend(dividend).excludedFromDividends(processor));
+        assertTrue(IDividend(dividend).excludedFromDividends(FlapTaxTokenV3(token).mainPool()));
+        assertEq(Dividend(payable(dividend)).owner(), coordinator.taxInfrastructureFactory());
+
+        // Token transfer hooks register the escrow's live balance immediately. The temporary
+        // Coordinator share created by minting is settled back to zero in the same transaction.
+        (uint256 presaleShare,,) = IDividend(dividend).userInfo(presale);
+        (uint256 coordinatorShare,,) = IDividend(dividend).userInfo(address(coordinator));
+        assertEq(presaleShare, SUPPLY);
+        assertEq(coordinatorShare, 0);
+        assertEq(IDividend(dividend).totalShares(), SUPPLY);
+
+        PackedFeeConfig memory cfg = TaxProcessor(payable(processor)).feeConfig();
+        assertEq(cfg.marketBps, 4_000);
+        assertEq(cfg.deflationBps, 1_000);
+        assertEq(cfg.lpBps, 2_000);
+        assertEq(cfg.dividendBps, 3_000);
+    }
+
+    function test_RevertWhen_TaxDistributionDoesNotSumToBps() public {
+        TokenConfig memory config = _tokenConfig();
+        config.marketBps = 9_999;
+        bytes32 salt = _vanitySalt("invalid-distribution");
+        vm.expectRevert(InvalidTaxDistribution.selector);
+        vm.prank(creator);
+        coordinator.createToken{value: 1 ether}(config, salt);
+    }
+
+    function test_RevertWhen_DividendThresholdDoesNotMatchChannel() public {
+        TokenConfig memory config = _tokenConfig();
+        config.minimumShareBalance = 1 ether;
+        bytes32 salt = _vanitySalt("invalid-dividend-threshold");
+        vm.expectRevert(InvalidMinimumShareBalance.selector);
+        vm.prank(creator);
+        coordinator.createToken{value: 1 ether}(config, salt);
     }
 
     function test_TaxDurationIsPlatformFixed() public {
@@ -418,6 +482,11 @@ contract CoordinatorTest is Test {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: feeReceiver,
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

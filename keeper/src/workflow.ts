@@ -60,6 +60,7 @@ export class KeeperWorkflow extends WorkflowEntrypoint<Env, KeeperWorkflowPayloa
             await storeCurrentSample(this.env.DB, config, snapshot);
             planned = await Promise.all([
               buildExecutionPlan(this.env.DB, config, snapshot, "tax", now),
+              buildExecutionPlan(this.env.DB, config, snapshot, "liquidity", now),
               buildExecutionPlan(this.env.DB, config, snapshot, "buyback", now),
             ]);
           } catch (error) {

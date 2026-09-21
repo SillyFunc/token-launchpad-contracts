@@ -4,6 +4,7 @@ import { loadAnchorSamples, storeSample } from "./db";
 import {
   activeTaxRate,
   amountAfterTransferTax,
+  deviationBps,
   getAmountOut,
   medianBigInt,
   minBigInt,
@@ -25,6 +26,20 @@ const BPS = 10_000n;
 
 type PoolStateResult = readonly [number, number, number, boolean, bigint, bigint, number | bigint];
 type ReservesResult = readonly [bigint, bigint, number];
+type FeeConfigObject = {
+  marketBps: number;
+  deflationBps: number;
+  lpBps: number;
+  dividendBps: number;
+  feeRate: number;
+  commissionBps: number;
+};
+type FeeConfigResult = readonly [number, number, number, number, number, boolean, number, Address] | FeeConfigObject;
+
+function configNumber(config: FeeConfigResult, name: keyof FeeConfigObject, index: number) {
+  const value = Array.isArray(config) ? config[index] : (config as FeeConfigObject)[name];
+  return numberValue(value as number | bigint);
+}
 
 function numberValue(value: number | bigint): number {
   const result = Number(value);
@@ -40,6 +55,10 @@ export async function inspectAsset(config: KeeperConfig, asset: AssetRow): Promi
     { address: asset.pair, abi: pairAbi, functionName: "getReserves" },
     { address: asset.token, abi: tokenAbi, functionName: "poolState" },
     { address: asset.tax_processor, abi: taxProcessorAbi, functionName: "pendingTaxTokens" },
+    { address: asset.tax_processor, abi: taxProcessorAbi, functionName: "feeConfigV2" },
+    { address: asset.tax_processor, abi: taxProcessorAbi, functionName: "lpTokenBalance" },
+    { address: asset.tax_processor, abi: taxProcessorAbi, functionName: "lpQuoteBalance" },
+    { address: asset.pair, abi: pairAbi, functionName: "totalSupply" },
   ];
   if (asset.vault) {
     calls.push(
@@ -69,6 +88,7 @@ export async function inspectAsset(config: KeeperConfig, asset: AssetRow): Promi
     reserveWbnb: tokenIsToken0 ? reserves[1] : reserves[0],
   };
   const pool = values[3] as PoolStateResult;
+  const feeConfig = values[5] as FeeConfigResult;
   return {
     asset,
     blockNumber: block.number,
@@ -81,10 +101,33 @@ export async function inspectAsset(config: KeeperConfig, asset: AssetRow): Promi
       taxExpirationTime: numberValue(pool[5]),
     },
     pendingTax: values[4] as bigint,
-    vaultCanExecute: asset.vault ? (values[5] as boolean) : false,
-    vaultBuybackAmount: asset.vault ? (values[6] as bigint) : 0n,
-    vaultMode: asset.vault ? numberValue(values[7] as number | bigint) : 0,
+    feeConfig: {
+      marketBps: configNumber(feeConfig, "marketBps", 0),
+      deflationBps: configNumber(feeConfig, "deflationBps", 1),
+      lpBps: configNumber(feeConfig, "lpBps", 2),
+      dividendBps: configNumber(feeConfig, "dividendBps", 3),
+      feeRate: configNumber(feeConfig, "feeRate", 4),
+      commissionBps: configNumber(feeConfig, "commissionBps", 6),
+    },
+    lpTokenBalance: values[6] as bigint,
+    lpQuoteBalance: values[7] as bigint,
+    pairTotalSupply: values[8] as bigint,
+    vaultCanExecute: asset.vault ? (values[9] as boolean) : false,
+    vaultBuybackAmount: asset.vault ? (values[10] as bigint) : 0n,
+    vaultMode: asset.vault ? numberValue(values[11] as number | bigint) : 0,
   };
+}
+
+export function taxSwapAmount(amount: bigint, config: AssetSnapshot["feeConfig"]): bigint {
+  const fee = (amount * BigInt(config.feeRate)) / BPS;
+  const afterFee = amount - fee;
+  const commission = (afterFee * BigInt(config.commissionBps)) / BPS;
+  const distributable = afterFee - commission;
+  const market = (distributable * BigInt(config.marketBps)) / BPS;
+  const deflation = (distributable * BigInt(config.deflationBps)) / BPS;
+  const lp = (distributable * BigInt(config.lpBps)) / BPS;
+  const dividend = distributable - market - deflation - lp;
+  return fee + commission + market + (lp - lp / 2n) + dividend;
 }
 
 function quoteTax(
@@ -106,6 +149,11 @@ function quoteBuyback(
 ): bigint {
   const gross = getAmountOut(bnbIn, reserveWbnb, reserveToken, ammFeeBps);
   return amountAfterTransferTax(gross, buyTaxBps);
+}
+
+function quoteLiquidity(tokenAmount: bigint, reserveToken: bigint, reserveWbnb: bigint): bigint {
+  if (tokenAmount <= 0n || reserveToken <= 0n || reserveWbnb <= 0n) return 0n;
+  return (tokenAmount * reserveWbnb) / reserveToken;
 }
 
 async function anchorSamples(db: D1Database, config: KeeperConfig, snapshot: AssetSnapshot): Promise<PairSample[]> {
@@ -160,29 +208,76 @@ export async function buildExecutionPlan(
     const reserveCap = (snapshot.reserves.reserveToken * BigInt(config.taxMaxReserveBps)) / BPS;
     amountIn = minBigInt(snapshot.pendingTax, reserveCap);
     if (amountIn === 0n) return null;
-    currentQuote = quoteTax(
-      amountIn,
-      snapshot.reserves.reserveToken,
-      snapshot.reserves.reserveWbnb,
-      sellTax,
-      config.ammFeeBps,
-    );
-    anchorQuote = medianBigInt(
-      history.map((sample) => quoteTax(amountIn, sample.reserveToken, sample.reserveWbnb, sellTax, config.ammFeeBps)),
-    );
-    const protectedOut = protectedMinimumOut(
-      currentQuote,
-      anchorQuote,
-      config.slippageBps,
-      config.maxPriceDeviationBps,
-    );
-    if (!protectedOut.ok) return null;
-    minimumOut = protectedOut.minimumOut;
+    const swapAmount = taxSwapAmount(amountIn, snapshot.feeConfig);
+    if (swapAmount === 0n) {
+      currentQuote = 0n;
+      anchorQuote = 0n;
+      minimumOut = 0n;
+    } else {
+      currentQuote = quoteTax(
+        swapAmount,
+        snapshot.reserves.reserveToken,
+        snapshot.reserves.reserveWbnb,
+        sellTax,
+        config.ammFeeBps,
+      );
+      anchorQuote = medianBigInt(
+        history.map((sample) =>
+          quoteTax(swapAmount, sample.reserveToken, sample.reserveWbnb, sellTax, config.ammFeeBps),
+        ),
+      );
+      const protectedOut = protectedMinimumOut(
+        currentQuote,
+        anchorQuote,
+        config.slippageBps,
+        config.maxPriceDeviationBps,
+      );
+      if (!protectedOut.ok) return null;
+      minimumOut = protectedOut.minimumOut;
+    }
     target = getAddress(snapshot.asset.tax_processor);
     data = encodeFunctionData({
       abi: taxProcessorAbi,
       functionName: "processPendingTax",
       args: [amountIn, minimumOut, deadline],
+    });
+  } else if (kind === "liquidity") {
+    if (snapshot.lpTokenBalance === 0n || snapshot.lpQuoteBalance === 0n || snapshot.pairTotalSupply === 0n) {
+      return null;
+    }
+    const reserveCap = (snapshot.reserves.reserveToken * BigInt(config.taxMaxReserveBps)) / BPS;
+    amountIn = minBigInt(snapshot.lpTokenBalance, reserveCap);
+    let actualToken = amountAfterTransferTax(amountIn, sellTax);
+    let neededQuote = quoteLiquidity(actualToken, snapshot.reserves.reserveToken, snapshot.reserves.reserveWbnb);
+    if (neededQuote > snapshot.lpQuoteBalance) {
+      const actualTokenCap =
+        (snapshot.lpQuoteBalance * snapshot.reserves.reserveToken) / snapshot.reserves.reserveWbnb;
+      amountIn = (actualTokenCap * BPS) / (BPS - BigInt(sellTax));
+      amountIn = minBigInt(amountIn, snapshot.lpTokenBalance);
+      actualToken = amountAfterTransferTax(amountIn, sellTax);
+      neededQuote = quoteLiquidity(actualToken, snapshot.reserves.reserveToken, snapshot.reserves.reserveWbnb);
+    }
+    if (amountIn === 0n || actualToken === 0n || neededQuote === 0n || neededQuote > snapshot.lpQuoteBalance) return null;
+
+    currentQuote = neededQuote;
+    anchorQuote = medianBigInt(
+      history.map((sample) => quoteLiquidity(actualToken, sample.reserveToken, sample.reserveWbnb)),
+    );
+    if (anchorQuote === 0n || deviationBps(currentQuote, anchorQuote) > BigInt(config.maxPriceDeviationBps)) return null;
+
+    minimumOut = (currentQuote * (BPS - BigInt(config.slippageBps))) / BPS;
+    const maximumQuote = (currentQuote * (BPS + BigInt(config.slippageBps))) / BPS + 1n;
+    const tokenLiquidity = (actualToken * snapshot.pairTotalSupply) / snapshot.reserves.reserveToken;
+    const quoteLiquidityAmount = (currentQuote * snapshot.pairTotalSupply) / snapshot.reserves.reserveWbnb;
+    const expectedLiquidity = minBigInt(tokenLiquidity, quoteLiquidityAmount);
+    secondaryMinimumOut = (expectedLiquidity * (BPS - BigInt(config.slippageBps))) / BPS;
+    if (minimumOut === 0n || secondaryMinimumOut === 0n) return null;
+
+    target = getAddress(snapshot.asset.tax_processor);
+    data = encodeFunctionData({
+      abi: taxProcessorAbi,
+      functionName: "addPendingLiquidity",
+      args: [amountIn, minimumOut, maximumQuote, secondaryMinimumOut, deadline],
     });
   } else {
     if (!snapshot.asset.vault || snapshot.asset.vault === zeroAddress || !snapshot.vaultCanExecute) return null;

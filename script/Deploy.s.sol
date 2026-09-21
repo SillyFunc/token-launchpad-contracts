@@ -11,6 +11,10 @@ import {PresaleFactory} from "src/PresaleFactory.sol";
 import {CoordinatorFactory} from "src/CoordinatorFactory.sol";
 import {BuybackVault} from "src/BuybackVault.sol";
 import {BuybackVaultFactory} from "src/BuybackVaultFactory.sol";
+import {TaxProcessor} from "src/TaxProcessor.sol";
+import {TaxInfrastructureFactory} from "src/TaxInfrastructureFactory.sol";
+import {Dividend} from "src/lib/dividend/Dividend.sol";
+import {IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
 
 contract Deploy is Script {
     function run() external {
@@ -36,6 +40,13 @@ contract Deploy is Script {
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
 
+        address wbnb = IPancakeRouter02(router).WETH();
+        TaxProcessor taxProcessorImpl = new TaxProcessor(address(coordinator));
+        Dividend dividendImpl = new Dividend(wbnb, address(0xdead));
+        TaxInfrastructureFactory taxInfrastructureFactory =
+            new TaxInfrastructureFactory(address(taxProcessorImpl), address(dividendImpl), address(coordinator));
+        coordinator.setTaxInfrastructureFactory(address(taxInfrastructureFactory));
+
         BuybackVault buybackImpl = new BuybackVault();
         BuybackVaultFactory buybackFactory = new BuybackVaultFactory(address(buybackImpl), address(coordinator));
         coordinator.setBuybackVaultFactory(address(buybackFactory));
@@ -47,6 +58,9 @@ contract Deploy is Script {
         console2.log("CoordinatorFactory:", address(coordinator));
         console2.log("PancakeSwap V2 Router:", router);
         console2.log("Keeper:", keeper);
+        console2.log("TaxProcessor impl:", address(taxProcessorImpl));
+        console2.log("Dividend impl:", address(dividendImpl));
+        console2.log("TaxInfrastructureFactory:", address(taxInfrastructureFactory));
         console2.log("BuybackVault impl:", address(buybackImpl));
         console2.log("BuybackVaultFactory:", address(buybackFactory));
 
@@ -61,6 +75,9 @@ contract Deploy is Script {
         vm.serializeAddress(deploymentKey, "tokenFactory", address(tokenFactory));
         vm.serializeAddress(deploymentKey, "presaleImplementation", address(presaleTemplate));
         vm.serializeAddress(deploymentKey, "presaleFactory", address(presaleFactory));
+        vm.serializeAddress(deploymentKey, "taxProcessorImplementation", address(taxProcessorImpl));
+        vm.serializeAddress(deploymentKey, "dividendImplementation", address(dividendImpl));
+        vm.serializeAddress(deploymentKey, "taxInfrastructureFactory", address(taxInfrastructureFactory));
         vm.serializeAddress(deploymentKey, "buybackVaultImplementation", address(buybackImpl));
         vm.serializeAddress(deploymentKey, "buybackVaultFactory", address(buybackFactory));
         string memory deploymentJson = vm.serializeAddress(deploymentKey, "coordinatorFactory", address(coordinator));

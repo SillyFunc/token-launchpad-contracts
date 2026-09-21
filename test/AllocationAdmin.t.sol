@@ -9,6 +9,7 @@ import {CoordinatorFactory, InvalidAllocation} from "src/CoordinatorFactory.sol"
 import {TokenFactory, TokenConfig} from "src/TokenFactory.sol";
 import {PresaleFactory, PresaleConfig} from "src/PresaleFactory.sol";
 import {MockRouterWithFactory, MockPairFactory, IERC20Lite, VanitySaltFinder} from "./TokenReservation.t.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 
 /// @title 管理员可配置分配比例 + softCap ≤ hardcap 校验测试
 /// @dev 覆盖面：
@@ -47,6 +48,7 @@ contract AllocationAdminTest is Test {
         PRESALE template = new PRESALE();
         presaleFactory = new PresaleFactory(address(template), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, router.WETH());
 
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
@@ -287,6 +289,11 @@ contract AllocationAdminTest is Test {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: address(0xfee1),
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

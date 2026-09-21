@@ -17,7 +17,7 @@ import {
     UnsafeMinQuoteOut,
     InvalidProcessingDeadline
 } from "src/TaxProcessor.sol";
-import {TaxProcessorInitParams} from "src/lib/interfaces/ITaxProcessor.sol";
+import {TaxProcessorInitParams, PackedFeeConfig} from "src/lib/interfaces/ITaxProcessor.sol";
 
 contract MockERC20 {
     string public name;
@@ -120,6 +120,27 @@ contract MockWBNB is MockERC20 {
 /// @notice 无 receive/fallback 的收款合约：拒收原生 BNB（测试 WBNB 兜底路径）
 contract NoReceiveReceiver {}
 
+contract MockDividend {
+    MockERC20 public immutable token;
+    bool public failDeposit;
+    uint256 public totalDeposited;
+
+    constructor(MockERC20 token_) {
+        token = token_;
+    }
+
+    function setFailDeposit(bool value) external {
+        failDeposit = value;
+    }
+
+    function deposit(uint256 amount) external returns (bool) {
+        if (failDeposit) revert("mock: dividend failed");
+        token.transferFrom(msg.sender, address(this), amount);
+        totalDeposited += amount;
+        return true;
+    }
+}
+
 contract TaxProcessorTest is Test {
     MockERC20 taxToken;
     MockWBNB wbnb;
@@ -154,11 +175,11 @@ contract TaxProcessorTest is Test {
             quoteToken: address(wbnb),
             router: address(router),
             feeReceiver: feeReceiver,
-            marketAddress: address(0),
+            marketAddress: feeReceiver,
             dividendAddress: address(0),
             taxToken: address(taxToken),
             feeRate: 0,
-            marketBps: 0,
+            marketBps: 10_000,
             deflationBps: 0,
             lpBps: 0,
             dividendBps: 0,
@@ -236,6 +257,7 @@ contract TaxProcessorTest is Test {
         TaxProcessor tp2 = new TaxProcessor(address(this));
         TaxProcessorInitParams memory p = _params(0);
         p.feeReceiver = address(rejecter);
+        p.marketAddress = address(rejecter);
         tp2.initialize(p);
         _authorize(tp2);
 
@@ -391,5 +413,96 @@ contract TaxProcessorTest is Test {
     function test_RevertWhen_KeeperRegistryZero() public {
         vm.expectRevert(KeeperRegistryRequired.selector);
         new TaxProcessor(address(0));
+    }
+
+    /// @dev Regression target for the four-channel restoration: the current
+    ///      single-channel processor discards these values and this test must fail
+    ///      before the implementation change.
+    function test_FourChannelConfigIsPersisted() public {
+        TaxProcessor tp2 = new TaxProcessor(address(this));
+        TaxProcessorInitParams memory p = _params(0);
+        p.marketAddress = address(0xA11CE);
+        p.dividendAddress = address(0xD1A1);
+        p.marketBps = 4_000;
+        p.deflationBps = 1_000;
+        p.lpBps = 2_000;
+        p.dividendBps = 3_000;
+        p.dividendToken = address(wbnb);
+        tp2.initialize(p);
+
+        PackedFeeConfig memory config = tp2.feeConfig();
+        assertEq(config.marketBps, 4_000);
+        assertEq(config.deflationBps, 1_000);
+        assertEq(config.lpBps, 2_000);
+        assertEq(config.dividendBps, 3_000);
+        assertEq(tp2.marketAddress(), address(0xA11CE));
+        assertEq(tp2.dividendAddress(), address(0xD1A1));
+    }
+
+    function test_FourChannelSplitUsesActualQuoteAndDefersFailedDividend() public {
+        MockDividend dividend = new MockDividend(wbnb);
+        dividend.setFailDeposit(true);
+
+        TaxProcessor tp2 = new TaxProcessor(address(this));
+        TaxProcessorInitParams memory p = _params(0);
+        p.marketBps = 4_000;
+        p.deflationBps = 1_000;
+        p.lpBps = 2_000;
+        p.dividendBps = 3_000;
+        p.dividendAddress = address(dividend);
+        p.dividendToken = address(wbnb);
+        tp2.initialize(p);
+        _authorize(tp2);
+
+        _queue(tp2, 10_000 ether);
+        assertEq(_process(tp2, 10_000 ether, 7_900 ether), 8_000 ether);
+
+        assertEq(taxToken.balanceOf(address(0xdead)), 1_000 ether, "deflation burns tax token directly");
+        assertEq(tp2.lpTokenBalance(), 1_000 ether, "half of LP channel is reserved as tax token");
+        assertEq(tp2.pendingTaxTokens(), 0, "LP reserve is not processable tax");
+        assertEq(tp2.lpQuoteBalance(), 1_000 ether, "other LP half is converted to quote");
+        assertEq(feeReceiver.balance, 4_000 ether, "market channel reaches fixed receiver");
+        assertEq(tp2.pendingDividendQuoteTokenBalance(), 3_000 ether, "failed deposit stays retryable");
+
+        dividend.setFailDeposit(false);
+        tp2.dispatch();
+        assertEq(dividend.totalDeposited(), 3_000 ether);
+        assertEq(tp2.pendingDividendQuoteTokenBalance(), 0);
+        assertEq(tp2.totalDividendTokenSent(), 3_000 ether);
+    }
+
+    function test_AllDeflationConfigProcessesWithoutSwap() public {
+        TaxProcessor tp2 = new TaxProcessor(address(this));
+        TaxProcessorInitParams memory p = _params(0);
+        p.marketAddress = address(0);
+        p.marketBps = 0;
+        p.deflationBps = 10_000;
+        tp2.initialize(p);
+        _authorize(tp2);
+
+        _queue(tp2, 123 ether);
+        vm.prank(keeper);
+        uint256 out = tp2.processPendingTax(123 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(out, 0);
+        assertEq(taxToken.balanceOf(address(0xdead)), 123 ether);
+        assertEq(tp2.pendingTaxTokens(), 0);
+    }
+
+    function test_RoundingDustNeverActivatesDisabledDividendChannel() public {
+        TaxProcessor tp2 = new TaxProcessor(address(this));
+        TaxProcessorInitParams memory p = _params(0);
+        p.marketBps = 3_333;
+        p.deflationBps = 3_333;
+        p.lpBps = 3_334;
+        tp2.initialize(p);
+        _authorize(tp2);
+
+        _queue(tp2, 1);
+        _process(tp2, 1, 1);
+
+        assertEq(tp2.pendingDividendQuoteTokenBalance(), 0);
+        assertEq(tp2.dividendAddress(), address(0));
+        assertEq(feeReceiver.balance, 1, "flooring dust belongs to the protocol receiver");
     }
 }

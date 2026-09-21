@@ -1,6 +1,6 @@
 # SillyFunc Launchpad Keeper
 
-Cloudflare Workers 免费层上的 BSC 税费清算与自动回购执行器。完整的资金流、威胁模型、部署顺序和验收清单见 [`docs/keeper-cloudflare.md`](../docs/keeper-cloudflare.md)。
+Cloudflare Workers 免费层上的 BSC 四通道税费、自动加池与自动回购执行器。它规划三类任务：`tax`（市场/销毁/LP/分红拆分）、`liquidity`（双边加池并销毁 LP）和 `buyback`。完整的资金流、威胁模型、部署顺序和验收清单见 [`docs/keeper-cloudflare.md`](../docs/keeper-cloudflare.md)。
 
 ## 安全边界
 

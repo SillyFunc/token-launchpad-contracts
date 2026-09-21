@@ -78,6 +78,17 @@ function snapshot(overrides: Partial<AssetSnapshot> = {}): AssetSnapshot {
       taxExpirationTime: 20_000,
     },
     pendingTax: 10_000n,
+    feeConfig: {
+      marketBps: 10_000,
+      deflationBps: 0,
+      lpBps: 0,
+      dividendBps: 0,
+      feeRate: 0,
+      commissionBps: 0,
+    },
+    lpTokenBalance: 0n,
+    lpQuoteBalance: 0n,
+    pairTotalSupply: 10_000n,
     vaultCanExecute: true,
     vaultBuybackAmount: 1_000n,
     vaultMode: 0,
@@ -121,6 +132,71 @@ describe("execution planning", () => {
       },
     });
     await expect(buildExecutionPlan(database(anchors()), config, manipulated, "tax", 10_000)).resolves.toBeNull();
+  });
+
+  it("quotes only the four-channel portion that is actually swapped", async () => {
+    const plan = await buildExecutionPlan(
+      database(anchors()),
+      config,
+      snapshot({
+        feeConfig: {
+          marketBps: 4_000,
+          deflationBps: 1_000,
+          lpBps: 2_000,
+          dividendBps: 3_000,
+          feeRate: 0,
+          commissionBps: 0,
+        },
+      }),
+      "tax",
+      10_000,
+    );
+
+    const grossBatch = 3_000n;
+    const swapAmount = 2_400n;
+    const quote = getAmountOut(amountAfterTransferTax(swapAmount, 500), 1_000_000n, 100_000n, 25);
+    expect(plan?.amountIn).toBe(grossBatch);
+    expect(plan?.currentQuote).toBe(quote);
+  });
+
+  it("plans an all-deflation batch without inventing a swap minimum", async () => {
+    const plan = await buildExecutionPlan(
+      database(anchors()),
+      config,
+      snapshot({
+        feeConfig: {
+          marketBps: 0,
+          deflationBps: 10_000,
+          lpBps: 0,
+          dividendBps: 0,
+          feeRate: 0,
+          commissionBps: 0,
+        },
+      }),
+      "tax",
+      10_000,
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.currentQuote).toBe(0n);
+    expect(plan?.minimumOut).toBe(0n);
+  });
+
+  it("plans bounded LP minting from both reserved ledgers", async () => {
+    const plan = await buildExecutionPlan(
+      database(anchors()),
+      config,
+      snapshot({ lpTokenBalance: 3_000n, lpQuoteBalance: 1_000n, pairTotalSupply: 100_000n }),
+      "liquidity",
+      10_000,
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.target).toBe(taxProcessor);
+    expect(plan?.amountIn).toBe(3_000n);
+    expect(plan?.currentQuote).toBe(285n);
+    expect(plan?.minimumOut).toBe(282n);
+    expect(plan?.secondaryMinimumOut).toBeGreaterThan(0n);
   });
 
   it("ignores zero-reserve samples when building the historical anchor", async () => {
