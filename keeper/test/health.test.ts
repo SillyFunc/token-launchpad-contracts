@@ -27,7 +27,7 @@ const config = {
   chainId: 97,
   readRpcUrl: "https://rpc.invalid",
   sendRpcUrl: "https://rpc.invalid",
-  coordinator: "0x9a7594114f4b79544f7CA00FBd1E902C556BbC47",
+  coordinator: "0x8b678ed56926B975C9d926bE12778d9F17e479C1",
   keeper: "0x9f87b1973361b23387D7F1b536484543a5ea1eFB",
 } as unknown as KeeperConfig;
 
