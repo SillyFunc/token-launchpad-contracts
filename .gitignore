@@ -25,10 +25,6 @@ out/
 .codegraph/
 report.md
 
-# Contracts SDK build output and local dependencies
-/sdk/node_modules/
-/sdk/dist/
-
 # Cloudflare keeper local state and secrets
 /keeper/node_modules/
 /keeper/.wrangler/
