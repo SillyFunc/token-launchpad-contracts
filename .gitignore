@@ -10,6 +10,9 @@ out/
 !/broadcast
 /broadcast/*/31337/
 /broadcast/**/dry-run/
+# Foundry keeps a timestamped copy for every broadcast attempt, including
+# failed and resumed runs. Keep only the canonical *-latest.json files in Git.
+/broadcast/**/run-[0-9]*.json
 
 # Dotenv file
 .env
