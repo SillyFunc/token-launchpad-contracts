@@ -151,7 +151,9 @@ pnpm db:migrate:remote
 
 ### 阶段 D：录入 Secrets
 
-测试网的公开 `READ_RPC_URL`、`SEND_RPC_URL` 已写入 `keeper/wrangler.jsonc`；其中旧 `COORDINATOR_ADDRESS=0x8b678…79C1` 仅用于继续服务上一版代币。四通道部署后必须替换为新广播地址并执行阶段 E 的 `pnpm run deploy`。以下两个敏感值仍通过本机终端录入，不会写入 Git：
+测试网的公开 `READ_RPC_URL`、`SEND_RPC_URL` 已写入 `keeper/wrangler.jsonc`；
+`COORDINATOR_ADDRESS` 已切换为 2026-09-22 四通道部署
+`0x599146E6c5cCC44f54D27473B1FfD49a3A11634F`。以下两个敏感值仍通过本机终端录入，不会写入 Git：
 
 ```text
 pnpm wrangler secret put KEEPER_PRIVATE_KEY
@@ -237,8 +239,8 @@ pnpm wrangler d1 execute DB --remote --json --command "SELECT block_number,sampl
 | LP 回购 | 普通买入与 LP 半仓兑换分别设置最低输出 | 已验证（本地执行计划测试 + BSC fork 实池：Keeper 规划出的 LP 侧最低输出 `1.097e24` 被满足，LP `2.06e19` 铸给 `0xdead`，`totalLpBurned` 与 `0xdead` 持仓一致）；测试网实池复验建议并入主网上线前演练 |
 | RPC batch 乱序 | 按 JSON-RPC id 恢复正确顺序 | 已验证（本地单元测试） |
 | RPC 返回错误或 HTTP 503 | 显式失败，不把错误当作结果 | 已验证（本地单元测试） |
-| 管理令牌缺失或错误 | 管理接口安全失败并返回 401，健康检查仍可用 | 上一版已验证；测试网配置已切换到四通道 Coordinator，Worker 重新部署后必须通过 `/health`、`/admin/status` 复验 |
-| 部署与 Cron 连续性 | 每分钟触发一次 Workflow，环境校验通过，运行记录无失败 | 已验证（**截至 2026-09-20 07:52Z / 本地 15:52 快照**：D1 共 249 条运行记录、0 失败、0 未解决告警；记录数持续增长，最新值请查 D1） |
+| 管理令牌缺失或错误 | 管理接口安全失败并返回 401，健康检查仍可用 | 四通道 Worker 的 `/health` 已于 2026-09-22 03:02Z 返回 `ok: true`；携带管理令牌的 `/admin/status` 仍需人工复验 |
+| 部署与 Cron 连续性 | 每分钟触发一次 Workflow，环境校验通过，运行记录无失败 | 已验证（**2026-09-22 03:02Z 快照**：切换四通道 Coordinator 后最近 5 次运行均为 `complete`、`error = null`，0 未解决告警） |
 | 私钥与 Keeper 地址不匹配 | 拒绝签名 | 已验证（本地单元测试） |
 | BSC Legacy 交易签名 | 可恢复出配置的 Keeper 地址 | 已验证（本地单元测试） |
 | D1 首次建库 | 11 条 schema 命令全部成功 | 已验证（Wrangler 本地 D1） |
