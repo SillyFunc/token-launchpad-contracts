@@ -1,10 +1,13 @@
 {
-  "buybackVaultFactory": "0xb8F45651205850DFfc5Ecb23EEffAAFb8A02CDcf",
-  "buybackVaultImplementation": "0xa5C7A00C3A96A0E787a1c751071F531A7C44e05b",
+  "buybackVaultFactory": "0x83EA50F92c9f6fE9e2e245704364af37b6096254",
+  "buybackVaultImplementation": "0x40A5Dbe57c140a7dC36751A6E4db13e8084C6C8F",
   "chainId": 97,
-  "coordinatorFactory": "0x8b678ed56926B975C9d926bE12778d9F17e479C1",
-  "flapTaxTokenImplementation": "0x74919901380297e0294dcd206B9C1E934e7026da",
-  "presaleFactory": "0x41Bc35F1e4b86d2230CDa129ae42D57968E4fe79",
-  "presaleImplementation": "0x22a55bEe1F079ecf021347575599C5dCf96FE751",
-  "tokenFactory": "0x084f90Eda0EE5fd0075159feBE44bcCa3dE1f083"
+  "coordinatorFactory": "0x599146E6c5cCC44f54D27473B1FfD49a3A11634F",
+  "dividendImplementation": "0x68Cd5cb9E43893a87a60785027904267A12D9AbC",
+  "flapTaxTokenImplementation": "0x625f636aC8570F33a1E7a16ddD03c48aa2a44cBD",
+  "presaleFactory": "0xe59f95da410a9F4EF681F5D427e7C44745611405",
+  "presaleImplementation": "0xe2cd0001E5a1f16466c14BEb02f355cc89f501ab",
+  "taxInfrastructureFactory": "0xDaABC64bb04c64fD60d076e1B540439b8fD068ED",
+  "taxProcessorImplementation": "0x3A0c1f58838f07bC5Ecf2Fc40C9F174E61ff548e",
+  "tokenFactory": "0xA5C0f01F5426fA2369e5EceF8173Ee97F4A4a782"
 }
