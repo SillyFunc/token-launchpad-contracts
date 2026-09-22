@@ -2,8 +2,8 @@
 
 > 主网对接请使用 [主网专用文档](frontend-integration-mainnet.md)。两份文档的网络、部署地址和时间参数彼此独立维护。
 
-> 源码版本：**2026-09-22 四通道税收待部署版**。`TokenConfig` 已扩展为 13 字段；市场、销毁、LP、分红四项占比之和必须为 10,000 bps。`taxDuration` 仍由 Coordinator 固定注入 `100 * 365 days`，不由 DApp 传入。
-> ⚠️ 当前源码尚未部署。下表 2026-09-21 地址运行的是上一版 8 字段、单通道 ABI，**不得绑定本页的新 13 字段 ABI**。新地址必须以新的 15 笔广播产物与链上核验结果为准。
+> 源码版本：**2026-09-22 四通道税收测试网已部署版**。`TokenConfig` 已扩展为 13 字段；市场、销毁、LP、分红四项占比之和必须为 10,000 bps。`taxDuration` 仍由 Coordinator 固定注入 `100 * 365 days`，不由 DApp 传入。
+> 当前地址来自 `broadcast/Deploy.s.sol/97/run-latest.json`，15/15 回执成功、接线核验通过，十个合约均已在 BscScan 完成源码验证。
 > 本仓库不再维护前端 SDK。DApp 只维护实际调用所需的最小 ABI；本文 §9 给出可直接裁剪的示例。
 
 ---
@@ -35,21 +35,22 @@
 | RPC（WebSocket） | `wss://bsc-testnet-rpc.publicnode.com` |
 | 区块浏览器 | `https://testnet.bscscan.com` |
 
-### 1.2 上一版测试网部署（历史，与当前源码 ABI 不兼容）
+### 1.2 当前测试网部署（四通道 ABI）
 
-下列地址已完成当时版本的接线和验证，但不包含四通道税收、Dividend、TaxProcessor 克隆工厂，也不接受 13 字段 `TokenConfig`。
+下列地址与本文 13 字段 `TokenConfig`、四通道税收和自动回购 ABI 一致：
 
 | 合约 | 地址 | 前端是否直接交互 |
 |---|---|---|
-| **CoordinatorFactory（旧入口）** | `0x8b678ed56926B975C9d926bE12778d9F17e479C1` | ❌ 仅供历史核验，不得绑定当前 ABI |
-| FlapTaxTokenV3 实现（模板） | `0x74919901380297e0294dcd206B9C1E934e7026da` | ❌ 仅克隆实现，不直接调用 |
-| TokenFactory | `0x084f90Eda0EE5fd0075159feBE44bcCa3dE1f083` | ❌ 由 Coordinator 调度 |
-| PRESALE 模板 | `0x22a55bEe1F079ecf021347575599C5dCf96FE751` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
-| PresaleFactory | `0x41Bc35F1e4b86d2230CDa129ae42D57968E4fe79` | ❌ 由 Coordinator 调度 |
-| BuybackVault 实现（模板） | `0xa5C7A00C3A96A0E787a1c751071F531A7C44e05b` | ❌ 仅克隆实现，不直接调用 |
-| BuybackVaultFactory | `0xb8F45651205850DFfc5Ecb23EEffAAFb8A02CDcf` | ❌ 由 Coordinator 调度；金库实例由 `createTokenWithVault` 创建 |
-
-新版本新增 `TaxProcessor` 实现、`Dividend` 实现和 `TaxInfrastructureFactory` 三个全局部署地址，当前均为 `PENDING_DEPLOYMENT`。每个代币绑定的是它们的 EIP-1167 克隆实例。
+| **CoordinatorFactory（前端入口）** | `0x599146E6c5cCC44f54D27473B1FfD49a3A11634F` | ✅ 创建代币、读平台配置 |
+| FlapTaxTokenV3 实现（模板） | `0x625f636aC8570F33a1E7a16ddD03c48aa2a44cBD` | ❌ 仅克隆实现，不直接调用 |
+| TokenFactory | `0xA5C0f01F5426fA2369e5EceF8173Ee97F4A4a782` | ❌ 由 Coordinator 调度 |
+| PRESALE 模板 | `0xe2cd0001E5a1f16466c14BEb02f355cc89f501ab` | ❌ 仅克隆实现（已初始化锁定，owner=0x1） |
+| PresaleFactory | `0xe59f95da410a9F4EF681F5D427e7C44745611405` | ❌ 由 Coordinator 调度 |
+| TaxProcessor 实现（模板） | `0x3A0c1f58838f07bC5Ecf2Fc40C9F174E61ff548e` | ❌ 每个代币使用 EIP-1167 克隆 |
+| Dividend 实现（模板） | `0x68Cd5cb9E43893a87a60785027904267A12D9AbC` | ❌ 每个代币使用 EIP-1167 克隆 |
+| TaxInfrastructureFactory | `0xDaABC64bb04c64fD60d076e1B540439b8fD068ED` | ❌ 由 Coordinator 调度 |
+| BuybackVault 实现（模板） | `0x40A5Dbe57c140a7dC36751A6E4db13e8084C6C8F` | ❌ 仅克隆实现，不直接调用 |
+| BuybackVaultFactory | `0x83EA50F92c9f6fE9e2e245704364af37b6096254` | ❌ 由 Coordinator 调度；金库实例由 `createTokenWithVault` 创建 |
 
 ### 1.3 第三方合约（PancakeSwap V2 测试网）
 
@@ -59,7 +60,7 @@
 | Factory V2 | `0x6725F303b657a9451d8BA641348b6761A6CC7a17` |
 | WBNB | `0xae13d989daC2F0dEbFf460aC112a837C89BAa7cd` |
 
-### 1.4 平台费用（新部署后读链获取，勿硬编码）
+### 1.4 平台费用（读链获取，勿硬编码）
 
 - 发币费 `coordinator.creationFee()` — 当前 **0.005 BNB**
 - 地址预留费 `coordinator.reservationFee()` — 当前 **0.001 BNB**
@@ -873,7 +874,7 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 
 ## 9. viem 快速上手
 
-> 当前四通道源码待部署，以下零地址是刻意的安全占位符；必须从新广播产物替换后才能使用。
+> 以下地址对应 2026-09-22 已核验的 BSC 测试网四通道部署。
 
 ```ts
 import {
@@ -884,7 +885,7 @@ import { bscTestnet } from "viem/chains";
 
 const RPC  = "https://bsc-testnet-rpc.publicnode.com";
 const WSRPC = "wss://bsc-testnet-rpc.publicnode.com";
-const COORDINATOR = "0x0000000000000000000000000000000000000000"; // PENDING_DEPLOYMENT
+const COORDINATOR = "0x599146E6c5cCC44f54D27473B1FfD49a3A11634F";
 
 const client   = createPublicClient({ chain: bscTestnet, transport: http(RPC) });
 const wsClient = createPublicClient({ chain: bscTestnet, transport: webSocket(WSRPC) });
@@ -941,8 +942,8 @@ const buybackVaultAbi = parseAbi([
 // ---------- ① 发币（纯发币模式） ----------
 // 8888-only 体系：salt 必须是"搜好的尾号 8888 盐"（零盐/非 8888 盐直接 revert，
 // 见 2.4）。最小可行搜盐示例（生产建议 Web Worker 内跑并带随机种子派生）：
-const TOKEN_FACTORY = "0x0000000000000000000000000000000000000000"; // PENDING_DEPLOYMENT
-const IMPL = "0x0000000000000000000000000000000000000000"; // PENDING_DEPLOYMENT
+const TOKEN_FACTORY = "0xA5C0f01F5426fA2369e5EceF8173Ee97F4A4a782";
+const IMPL = "0x625f636aC8570F33a1E7a16ddD03c48aa2a44cBD";
 const INIT_CODE = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73"
   + IMPL.toLowerCase().slice(2) + "5af43d82803e903d91602b57fd5bf3";
 function predict(salt: bigint) {                       // EIP-1014 / EIP-1167
@@ -1027,7 +1028,40 @@ try { ... } catch (e) {
 
 ---
 
-## 附录 A：2026-09-21 上一版部署核验记录（历史）
+## 附录 A：部署核验记录
+
+### 2026-09-22 四通道测试网部署（当前）
+
+当前部署共 15 笔交易（10 笔 CREATE + 5 笔配置/授权），15/15 回执均为 `0x1`：
+
+| 操作 | 交易 | 地址/目标 | 回执 |
+|---|---|---|---|
+| 部署 FlapTaxTokenV3 实现 | `0x00d3e514e4dd98cb7c916b5b2eee6aabe214e6225892b1ef2317c6f1af2018b1` | `0x625f636aC8570F33a1E7a16ddD03c48aa2a44cBD` | ✅ `0x1` |
+| 部署 TokenFactory | `0xf6d79b332bf67dc1a62f93e80fd65ec3f893665a6414d962a5efb18487ae7401` | `0xA5C0f01F5426fA2369e5EceF8173Ee97F4A4a782` | ✅ `0x1` |
+| 部署 PRESALE 模板 | `0xd90efd32372a1cbd61f5c7191c124c93e4a3ac7bb46293338d30dd6b53092b56` | `0xe2cd0001E5a1f16466c14BEb02f355cc89f501ab` | ✅ `0x1` |
+| 部署 PresaleFactory | `0xe3aff8044d39a3ee677ac4740a7ceb6ac3d0b1ae0344284b279b1998d6a038a2` | `0xe59f95da410a9F4EF681F5D427e7C44745611405` | ✅ `0x1` |
+| 部署 CoordinatorFactory | `0x1f55dfee996e29c0000764b116092049d15670be4689eb0bcbf0d53fa8b8142e` | `0x599146E6c5cCC44f54D27473B1FfD49a3A11634F` | ✅ `0x1` |
+| 授予 Keeper 权限 | `0x89fb6daab9e78f3bbbf34a80e06719ccaf330be98d2e4f8092f65bc8afd5d4c7` | Coordinator | ✅ `0x1` |
+| TokenFactory 授予 Coordinator 权限 | `0x8a376513eaf94106b6fac308bb2c3f54c90a76ae33e6c3376438509fe2cac1e2` | TokenFactory | ✅ `0x1` |
+| PresaleFactory 授予 Coordinator 权限 | `0xb353c394a676cb5aff1a5cb091b0513bd16bb16515ff1b388fc504b06c576731` | PresaleFactory | ✅ `0x1` |
+| 部署 TaxProcessor 实现 | `0xfb10c951b31d0143e2d8e17d3fe7ee17371cc0e124adb1448adba111ad4fa178` | `0x3A0c1f58838f07bC5Ecf2Fc40C9F174E61ff548e` | ✅ `0x1` |
+| 部署 Dividend 实现 | `0xbc393485ec8059333509fafbcd72d175b8e88e1935893231f5f16c736d34bd40` | `0x68Cd5cb9E43893a87a60785027904267A12D9AbC` | ✅ `0x1` |
+| 部署 TaxInfrastructureFactory | `0x639a951c66d530ce67baae9b9afe12dd7539b9dd7709a03f7632e9e1b23ec3ed` | `0xDaABC64bb04c64fD60d076e1B540439b8fD068ED` | ✅ `0x1` |
+| Coordinator 绑定 TaxInfrastructureFactory | `0x7d047febcc609c6e7c80e1dcb2fefed982885cc712e685d25e5697e18b7e9712` | Coordinator | ✅ `0x1` |
+| 部署 BuybackVault 实现 | `0x22d2a6fa19ebff0bbfb76b3f6a8eb751e84ef1443275a24d1fca95132ce1cd54` | `0x40A5Dbe57c140a7dC36751A6E4db13e8084C6C8F` | ✅ `0x1` |
+| 部署 BuybackVaultFactory | `0xba8dd09cda325816adbee254c61d14a480f88fcb2d65caaa427b14d2b3ef4f33` | `0x83EA50F92c9f6fE9e2e245704364af37b6096254` | ✅ `0x1` |
+| Coordinator 绑定 BuybackVaultFactory | `0xa2633b2bad826cdb0a558c69464ddba9b185f20ad8eff2c04d91bbcd50853683` | Coordinator | ✅ `0x1` |
+
+**链上接线核验（全通过）**：
+
+- 十个部署地址均存在非空链上字节码；15/15 广播回执成功。
+- TokenFactory、PresaleFactory、TaxInfrastructureFactory、BuybackVaultFactory 均已向 Coordinator 授予 `COORDINATOR_ROLE`。
+- `CoordinatorFactory.hasRole(KEEPER_ROLE, 0x9f87…1eFB) == true`。
+- Coordinator 保存的税收基础设施工厂和回购工厂地址与上表一致；两个工厂的 `keeperRegistry` 均为当前 Coordinator。
+- 实现引用、Router、PRESALE 模板初始化锁、永久税收时长与平台费用均已逐项读链核验。
+- BscScan 源码发布：**已完成**（10/10 合约，编译口径 `v0.8.35+commit.47b9dedd`、optimizer 200 runs、evm `osaka`）。
+
+### 2026-09-21 上一版部署核验记录（历史）
 
 以下产物证明 2026-09-21 单通道版本当时部署正确，不代表当前四通道源码已部署，也不得向该 Coordinator 发送 13 字段配置。当时共 11 笔交易全部成功（7 笔 CREATE + 4 笔配置/授权）：
 

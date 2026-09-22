@@ -7,7 +7,7 @@
 | 项目 | BSC 测试网 | BSC 主网 |
 |---|---|---|
 | chainId | `97` | `56` |
-| Coordinator | `PENDING_DEPLOYMENT`（`0x8b678…79C1` 为上一版单通道） | 以主网最新广播与链上核验结果为准 |
+| Coordinator | `0x599146E6c5cCC44f54D27473B1FfD49a3A11634F` | 以主网最新广播与链上核验结果为准 |
 | Keeper | `0x9f87b1973361b23387D7F1b536484543a5ea1eFB` | 必须另建生产专用钱包，不复用测试网私钥 |
 | Pancake V2 Router | `0xD99D1c33F9fC3444f8101754aBC46c52416550D1` | `0x10ED43C718714eb63d5aA57B78B54704E256024E` |
 | 读取 RPC | BNB Chain 测试网公共 RPC | 独立公共/免费 RPC |
@@ -109,25 +109,29 @@ ROUTER_ADDRESS=0xD99D1c33F9fC3444f8101754aBC46c52416550D1
 先省略 `--broadcast` 做模拟；确认 15 笔交易、Keeper 授权、两个克隆实现与两个辅助工厂接线和 Gas 预算正确后，再执行真实广播：
 
 ```text
-forge script script/Deploy.s.sol:Deploy --rpc-url <BSC testnet RPC> --sender <deployer address> --account launchpad-testnet-deployer --legacy --broadcast --slow
+forge script script/Deploy.s.sol:Deploy --rpc-url bsc-testnet --account launchpad-testnet-deployer --legacy --broadcast --slow
 ```
 
 命令会在本机询问 keystore 密码。不要把密码写入仓库、环境变量或聊天记录。
 
-2026-09-21 的 `0x8b678ed56926B975C9d926bE12778d9F17e479C1` 是上一版单通道 Coordinator。四通道源码部署前保持 `PENDING_DEPLOYMENT`，不得把旧地址与新 ABI 混用。
+2026-09-22 四通道 Coordinator 为 `0x599146E6c5cCC44f54D27473B1FfD49a3A11634F`。2026-09-21 的 `0x8b678ed56926B975C9d926bE12778d9F17e479C1` 是上一版单通道地址，不得与新 ABI 混用。
 
 不带 `--broadcast` 的 `forge script` 仅做模拟，不会生成 `script/deployments/97.json`；部署地址文件只允许由真实广播运行产生。
 
-BscScan 源码发布需要一个免费的 API key，且不得把 key 提交到 Git。真实广播写入新地址后，可用仓库脚本从 `script/deployments/97.json` 读取并依次验证十个合约：
+BscScan 源码发布需要一个免费的 API key，且不得把 key 提交到 Git。将
+`BSCSCAN_API_KEY` 写入仓库根目录的 `.env` 后，真实广播写入新地址即可运行：
 
-```bash
-read -rsp "BscScan API key: " BSCSCAN_API_KEY && echo
-export BSCSCAN_API_KEY
-bash script/verify-deployment-97.sh
-unset BSCSCAN_API_KEY
+```text
+node script/verify-deployment-97.ts
 ```
 
-十个部署合约全部显示 Verified 后，再更新 `docs/frontend-integration.md` 的发布状态。脚本依赖 `jq`，并会在地址缺失、格式错误或任一验证失败时立即停止。
+脚本使用 Node.js 22.18+ 的原生 TypeScript 支持，自动读取 `.env`，不依赖 Bash、`jq` 或
+`dotenv`。它会先确认 RPC 的 chain ID 为 97，并检查十个地址均有链上代码，再从
+`broadcast/Deploy.s.sol/97/run-latest.json` 的真实部署交易中提取构造参数并依次提交
+验证。脚本会跳过 Etherscan V2 在 BSC 测试网上需要付费套餐的“是否已验证”和构造
+参数查询，但源码提交仍使用 `.env` 中的 BscScan API key。地址缺失、广播产物不匹配、
+网络错误或验证失败会自动重试三次，仍然失败时立即停止。十个部署合约全部显示
+Verified 后，再更新 `docs/frontend-integration.md` 的发布状态。
 
 ### 阶段 C：创建 Cloudflare 免费项目
 
@@ -233,7 +237,7 @@ pnpm wrangler d1 execute DB --remote --json --command "SELECT block_number,sampl
 | LP 回购 | 普通买入与 LP 半仓兑换分别设置最低输出 | 已验证（本地执行计划测试 + BSC fork 实池：Keeper 规划出的 LP 侧最低输出 `1.097e24` 被满足，LP `2.06e19` 铸给 `0xdead`，`totalLpBurned` 与 `0xdead` 持仓一致）；测试网实池复验建议并入主网上线前演练 |
 | RPC batch 乱序 | 按 JSON-RPC id 恢复正确顺序 | 已验证（本地单元测试） |
 | RPC 返回错误或 HTTP 503 | 显式失败，不把错误当作结果 | 已验证（本地单元测试） |
-| 管理令牌缺失或错误 | 管理接口安全失败并返回 401，健康检查仍可用 | 上一版已验证；切换到待部署的四通道 Coordinator 后必须重新部署并通过 `/health`、`/admin/status` 复验 |
+| 管理令牌缺失或错误 | 管理接口安全失败并返回 401，健康检查仍可用 | 上一版已验证；测试网配置已切换到四通道 Coordinator，Worker 重新部署后必须通过 `/health`、`/admin/status` 复验 |
 | 部署与 Cron 连续性 | 每分钟触发一次 Workflow，环境校验通过，运行记录无失败 | 已验证（**截至 2026-09-20 07:52Z / 本地 15:52 快照**：D1 共 249 条运行记录、0 失败、0 未解决告警；记录数持续增长，最新值请查 D1） |
 | 私钥与 Keeper 地址不匹配 | 拒绝签名 | 已验证（本地单元测试） |
 | BSC Legacy 交易签名 | 可恢复出配置的 Keeper 地址 | 已验证（本地单元测试） |
