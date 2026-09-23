@@ -23,13 +23,23 @@ enum TriggerMode {
     TimeAndBalance // 2：到点且余额达标
 }
 
+/// @notice Keeper/DApp 可直接读取的回购就绪状态，避免 `canExecuteBuyback=false` 时无法判断原因。
+enum BuybackReadiness {
+    Ready,
+    InsufficientBalance,
+    TriggerBalanceNotMet,
+    TooEarly,
+    InvalidPoolReserves,
+    ReserveCapBelowMinimum
+}
+
 struct BuybackConfig {
     BuybackMode mode;
     TriggerMode trigger;
     uint64 firstExecuteAt; // Unix 秒；模式 1 必须为 0，模式 0/2 必须至少晚于创建时间 1 分钟
     uint64 intervalSeconds; // 60…31536000 秒
     uint256 triggerAmount; // 模式 0 必须 0；模式 1/2 必须 >= buybackAmount 且 <= 1000 BNB
-    uint256 buybackAmount; // 0.001…10 BNB，0.001 精度
+    uint256 buybackAmount; // 单次上限：0.001…10 BNB，0.001 精度；实际输入可被余额/储备安全线上限缩小
 }
 
 struct VaultStats {
@@ -48,6 +58,8 @@ struct VaultStats {
     uint256 totalLpBurned;
     uint256 buybackCount;
     bool canExecute;
+    uint256 executableBuybackAmount;
+    BuybackReadiness readiness;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +82,8 @@ error InvalidPair();
 error InvalidMinimumOutput();
 error InvalidExecutionDeadline();
 error InvalidPoolReserves();
-error BuybackAmountExceedsReserveLimit();
+error ReserveCapBelowMinimum();
+error UnsafeExecutionAmount(uint256 requested, uint256 maximum);
 error InvalidLpRatio();
 
 /// @notice 自动回购金库：接收 TaxProcessor 清算所得 BNB，按发币配置买回并销毁（或加 LP 死锁）。
@@ -83,6 +96,7 @@ contract BuybackVault is ReentrancyGuard {
     uint256 public constant MIN_BUYBACK_AMOUNT = 0.001 ether;
     uint256 public constant MAX_BUYBACK_AMOUNT = 10 ether;
     uint256 public constant BUYBACK_PRECISION = 0.001 ether;
+    uint256 public constant MIN_EXECUTION_AMOUNT = 0.0001 ether;
     uint256 public constant MAX_TRIGGER_AMOUNT = 1000 ether;
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant MAX_BUYBACK_RESERVE_BPS = 100; // 单笔最多使用池中 1% WBNB 储备
@@ -169,8 +183,14 @@ contract BuybackVault is ReentrancyGuard {
     }
 
     /// @notice 条件满足时执行一笔回购。仅 CoordinatorFactory 授权的 keeper 可调用。
-    /// @dev 成功才推进冷却；swap 失败整笔回滚。keeper 仅触发执行，不接收金库资金。
-    function executeBuyback(uint256 minTokenOut, uint256 minLpTokenOut, uint64 deadline) external nonReentrant {
+    /// @dev `expectedBnbIn` 是本次绑定预算且不得超过执行时重新计算的安全上限。
+    ///      Token 路径花费全部预算；LP 路径按实时配比最多花该预算，未使用部分留在金库。
+    ///      上限增加不会因第三方捐赠 1 wei 而阻断；上限下降到不足时回滚并重新报价。
+    ///      成功才推进冷却；失败整笔回滚，keeper 不接收金库资金。
+    function executeBuyback(uint256 expectedBnbIn, uint256 minTokenOut, uint256 minLpTokenOut, uint64 deadline)
+        external
+        nonReentrant
+    {
         if (!IAccessControl(keeperRegistry).hasRole(KEEPER_ROLE, msg.sender)) revert UnauthorizedKeeper();
         if (minTokenOut == 0 || (mode == BuybackMode.LpBurn && minLpTokenOut == 0)) {
             revert InvalidMinimumOutput();
@@ -178,15 +198,11 @@ contract BuybackVault is ReentrancyGuard {
         if (deadline < block.timestamp || deadline > block.timestamp + MAX_DEADLINE_DELAY) {
             revert InvalidExecutionDeadline();
         }
-        if (address(this).balance < buybackAmount) revert InsufficientBalance();
-        if (
-            (trigger == TriggerMode.Balance || trigger == TriggerMode.TimeAndBalance)
-                && address(this).balance < triggerAmount
-        ) {
-            revert InsufficientBalance();
+        (uint256 maximumAmount, BuybackReadiness readiness) = previewBuyback();
+        _revertIfNotReady(readiness);
+        if (expectedBnbIn < MIN_EXECUTION_AMOUNT || expectedBnbIn > maximumAmount) {
+            revert UnsafeExecutionAmount(expectedBnbIn, maximumAmount);
         }
-        if (!_timeOk()) revert TooEarly();
-        _validateReserveLimit();
 
         lastExecuteTime = uint64(block.timestamp);
         nextExecuteTime = uint64(block.timestamp + intervalSeconds);
@@ -196,13 +212,13 @@ contract BuybackVault is ReentrancyGuard {
         _activeCaller = msg.sender;
 
         if (mode == BuybackMode.LpBurn) {
-            try this.lpBuybackAndBurn(buybackAmount, minLpTokenOut, deadline) {}
+            try this.lpBuybackAndBurn(expectedBnbIn, minLpTokenOut, deadline) {}
             catch {
-                emit BuybackFallbackToToken(buybackAmount);
-                _tokenBuybackAndBurn(buybackAmount, minTokenOut, deadline);
+                emit BuybackFallbackToToken(expectedBnbIn);
+                _tokenBuybackAndBurn(expectedBnbIn, minTokenOut, deadline);
             }
         } else {
-            _tokenBuybackAndBurn(buybackAmount, minTokenOut, deadline);
+            _tokenBuybackAndBurn(expectedBnbIn, minTokenOut, deadline);
         }
         _activeCaller = address(0);
     }
@@ -214,14 +230,30 @@ contract BuybackVault is ReentrancyGuard {
     }
 
     function canExecuteBuyback() public view returns (bool) {
-        if (address(this).balance < buybackAmount) return false;
-        if (
-            (trigger == TriggerMode.Balance || trigger == TriggerMode.TimeAndBalance)
-                && address(this).balance < triggerAmount
-        ) {
-            return false;
+        (, BuybackReadiness readiness) = previewBuyback();
+        return readiness == BuybackReadiness.Ready;
+    }
+
+    /// @notice 返回当前可安全执行的精确 BNB 输入和不可执行原因。
+    /// @dev `buybackAmount` 是创建者锁定的单次上限；实际输入还受金库余额和池 WBNB 储备 1% 限制。
+    function previewBuyback() public view returns (uint256 executableAmount, BuybackReadiness readiness) {
+        uint256 balance = address(this).balance;
+        if (balance < MIN_EXECUTION_AMOUNT) return (0, BuybackReadiness.InsufficientBalance);
+        if ((trigger == TriggerMode.Balance || trigger == TriggerMode.TimeAndBalance) && balance < triggerAmount) {
+            return (0, BuybackReadiness.TriggerBalanceNotMet);
         }
-        return _timeOk() && _reserveLimitOk();
+        if (!_timeOk()) return (0, BuybackReadiness.TooEarly);
+
+        (uint256 reserveToken, uint256 reserveWbnb) = _pairReserves();
+        if (reserveToken == 0 || reserveWbnb == 0) return (0, BuybackReadiness.InvalidPoolReserves);
+
+        uint256 reserveCap = (reserveWbnb * MAX_BUYBACK_RESERVE_BPS) / BPS_DENOMINATOR;
+        executableAmount = balance < buybackAmount ? balance : buybackAmount;
+        if (reserveCap < executableAmount) executableAmount = reserveCap;
+        if (executableAmount < MIN_EXECUTION_AMOUNT) {
+            return (0, BuybackReadiness.ReserveCapBelowMinimum);
+        }
+        return (executableAmount, BuybackReadiness.Ready);
     }
 
     function getVaultStats() external view returns (VaultStats memory stats) {
@@ -239,7 +271,8 @@ contract BuybackVault is ReentrancyGuard {
         stats.totalBurnedToken = totalBurnedToken;
         stats.totalLpBurned = totalLpBurned;
         stats.buybackCount = buybackCount;
-        stats.canExecute = canExecuteBuyback();
+        (stats.executableBuybackAmount, stats.readiness) = previewBuyback();
+        stats.canExecute = stats.readiness == BuybackReadiness.Ready;
     }
 
     // -----------------------------------------------------------------------
@@ -342,18 +375,14 @@ contract BuybackVault is ReentrancyGuard {
         if (bought < minTokenOut) revert InvalidMinimumOutput();
     }
 
-    function _validateReserveLimit() internal view {
-        (uint256 reserveToken, uint256 reserveWbnb) = _pairReserves();
-        if (reserveToken == 0 || reserveWbnb == 0) revert InvalidPoolReserves();
-        if (buybackAmount > (reserveWbnb * MAX_BUYBACK_RESERVE_BPS) / BPS_DENOMINATOR) {
-            revert BuybackAmountExceedsReserveLimit();
+    function _revertIfNotReady(BuybackReadiness readiness) internal pure {
+        if (readiness == BuybackReadiness.Ready) return;
+        if (readiness == BuybackReadiness.InsufficientBalance || readiness == BuybackReadiness.TriggerBalanceNotMet) {
+            revert InsufficientBalance();
         }
-    }
-
-    function _reserveLimitOk() internal view returns (bool) {
-        (uint256 reserveToken, uint256 reserveWbnb) = _pairReserves();
-        return reserveToken > 0 && reserveWbnb > 0
-            && buybackAmount <= (reserveWbnb * MAX_BUYBACK_RESERVE_BPS) / BPS_DENOMINATOR;
+        if (readiness == BuybackReadiness.TooEarly) revert TooEarly();
+        if (readiness == BuybackReadiness.InvalidPoolReserves) revert InvalidPoolReserves();
+        revert ReserveCapBelowMinimum();
     }
 
     function _pairReserves() internal view returns (uint256 reserveToken, uint256 reserveWbnb) {

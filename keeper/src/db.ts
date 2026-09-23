@@ -1,8 +1,10 @@
 import type { Address, Hex } from "viem";
+import { BuybackReadiness } from "./types";
 import type { AssetRow, JobKind, PairSample, SignerResult } from "./types";
 
 /// @dev 同一 (token, kind) 连续跳过多少次后写告警；成交即清零并解除
 const SKIP_STREAK_ALERT_THRESHOLD = 5;
+const BUYBACK_READINESS_ALERT_THRESHOLD = 5;
 
 export async function getSetting(db: D1Database, key: string): Promise<string | null> {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?1").bind(key).first<{ value: string }>();
@@ -251,6 +253,53 @@ export async function trackSkipStreak(
     "warning",
     alertCode,
     `${kind} job for ${normalized} skipped ${streak} times in a row; latest reason: ${result.detail ?? "unknown"}`,
+    now,
+  );
+}
+
+/// @dev 每轮保存最新回购就绪状态；池无储备或 1% 安全额度低于经济执行下限时，
+///      连续五轮写入去重告警。余额不足、等待触发条件和等待时间都属于正常等待，
+///      会清零并解除流动性告警。
+export async function recordBuybackReadiness(
+  db: D1Database,
+  chainId: number,
+  token: Address,
+  readiness: BuybackReadiness,
+  executableAmount: bigint,
+  now: number,
+): Promise<void> {
+  const normalized = token.toLowerCase();
+  const stateKey = `buyback_readiness:${chainId}:${normalized}`;
+  const streakKey = `buyback_liquidity_streak:${chainId}:${normalized}`;
+  const alertCode = `buyback-liquidity:${normalized}`;
+  const readinessName = BuybackReadiness[readiness] ?? `Unknown(${readiness})`;
+
+  await setSetting(
+    db,
+    stateKey,
+    JSON.stringify({ readiness, readinessName, executableAmount: executableAmount.toString() }),
+    now,
+  );
+
+  const liquidityBlocked =
+    readiness === BuybackReadiness.InvalidPoolReserves ||
+    readiness === BuybackReadiness.ReserveCapBelowMinimum ||
+    readiness === BuybackReadiness.LegacyFixedAmountExceedsReserveCap;
+  if (!liquidityBlocked) {
+    await setSetting(db, streakKey, "0", now);
+    await resolveAlert(db, alertCode, now);
+    return;
+  }
+
+  const streak = Number((await getSetting(db, streakKey)) ?? "0") + 1;
+  await setSetting(db, streakKey, String(streak), now);
+  if (streak < BUYBACK_READINESS_ALERT_THRESHOLD) return;
+
+  await createAlert(
+    db,
+    "warning",
+    alertCode,
+    `buyback for ${normalized} blocked by ${readinessName} for ${streak} consecutive checks; executable amount ${executableAmount}`,
     now,
   );
 }

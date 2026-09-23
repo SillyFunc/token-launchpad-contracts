@@ -11,6 +11,7 @@ import {
     BuybackConfig,
     BuybackMode,
     TriggerMode,
+    BuybackReadiness,
     AlreadyInitialized,
     ZeroAddress,
     InvalidInterval,
@@ -24,7 +25,9 @@ import {
     InvalidPair,
     InvalidMinimumOutput,
     InvalidExecutionDeadline,
-    BuybackAmountExceedsReserveLimit
+    InvalidPoolReserves,
+    ReserveCapBelowMinimum,
+    UnsafeExecutionAmount
 } from "src/BuybackVault.sol";
 import {BuybackVaultFactory, ZeroImplementation, ZeroCoordinator, UnknownVault} from "src/BuybackVaultFactory.sol";
 import {
@@ -281,8 +284,9 @@ contract BuybackVaultTest is Test {
     }
 
     function _execute(BuybackVault vault, address keeper) internal {
+        (uint256 amount,) = vault.previewBuyback();
         vm.prank(keeper);
-        vault.executeBuyback(0.009 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(amount, 0.009 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
     }
 
     function test_implementationLocked() public {
@@ -372,7 +376,7 @@ contract BuybackVaultTest is Test {
         assertFalse(vault.canExecuteBuyback());
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.warp(block.timestamp + 60);
         assertTrue(vault.canExecuteBuyback());
@@ -386,7 +390,7 @@ contract BuybackVaultTest is Test {
 
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_timeTrigger_missedWindowExecutesOnce() public {
@@ -397,7 +401,7 @@ contract BuybackVaultTest is Test {
         assertEq(vault.buybackCount(), 1);
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_balanceTrigger() public {
@@ -414,7 +418,7 @@ contract BuybackVaultTest is Test {
         vm.deal(address(vault), 0.5 ether);
         vm.prank(caller);
         vm.expectRevert(InsufficientBalance.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.deal(address(vault), 1 ether);
         _execute(vault, caller);
@@ -472,13 +476,13 @@ contract BuybackVaultTest is Test {
 
         vm.prank(caller);
         vm.expectRevert(TooEarly.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.warp(block.timestamp + 60);
         vm.deal(address(vault), 0.5 ether);
         vm.prank(caller);
         vm.expectRevert(InsufficientBalance.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         vm.deal(address(vault), 1 ether);
         _execute(vault, caller);
@@ -533,7 +537,7 @@ contract BuybackVaultTest is Test {
         vm.warp(block.timestamp + 60);
 
         vm.prank(caller);
-        vault.executeBuyback(0.008 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.008 ether, 0, uint64(block.timestamp + 1 minutes));
 
         assertEq(token.balanceOf(DEAD), 0.009 ether);
         assertEq(vault.totalBurnedToken(), 0.009 ether);
@@ -549,7 +553,7 @@ contract BuybackVaultTest is Test {
         vm.warp(block.timestamp + 60);
 
         vm.prank(caller);
-        vault.executeBuyback(0.008 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.008 ether, 0.004 ether, uint64(block.timestamp + 1 minutes));
 
         assertGt(vault.totalLpBurned(), 0);
         assertEq(pairContract.balanceOf(DEAD), vault.totalLpBurned());
@@ -565,15 +569,15 @@ contract BuybackVaultTest is Test {
 
         vm.expectRevert(InvalidMinimumOutput.selector);
         vm.prank(caller);
-        vault.executeBuyback(0, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0, 0, uint64(block.timestamp + 1 minutes));
 
         vm.expectRevert(InvalidExecutionDeadline.selector);
         vm.prank(caller);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp - 1));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp - 1));
 
         vm.expectRevert(InvalidExecutionDeadline.selector);
         vm.prank(caller);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 11 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 11 minutes));
     }
 
     function test_minOutputFailureRollsBackScheduleAndFunds() public {
@@ -584,7 +588,7 @@ contract BuybackVaultTest is Test {
 
         vm.expectRevert("mock: insufficient output");
         vm.prank(caller);
-        vault.executeBuyback(0.02 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.02 ether, 0, uint64(block.timestamp + 1 minutes));
 
         assertEq(vault.buybackCount(), 0);
         assertEq(vault.lastExecuteTime(), 0);
@@ -592,16 +596,118 @@ contract BuybackVaultTest is Test {
         assertEq(address(vault).balance, 0.05 ether);
     }
 
-    function test_reserveLimitBlocksOversizedBuyback() public {
+    function test_reserveLimitCapsOversizedBuyback() public {
         BuybackVault vault = _cloneInit(_timeConfig());
         vm.deal(address(vault), 0.05 ether);
         vm.warp(block.timestamp + 60);
         pairContract.setReservesForTest(100 ether, 0.5 ether); // 1% limit = 0.005 BNB
 
-        assertFalse(vault.canExecuteBuyback());
-        vm.expectRevert(BuybackAmountExceedsReserveLimit.selector);
+        (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
+        assertEq(amount, 0.005 ether);
+        assertEq(uint8(readiness), uint8(BuybackReadiness.Ready));
+        assertTrue(vault.canExecuteBuyback());
+
         vm.prank(caller);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(amount, 0.004 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(vault.totalBuybackBNB(), 0.005 ether);
+        assertEq(token.balanceOf(DEAD), 0.005 ether);
+        assertEq(address(vault).balance, 0.045 ether);
+    }
+
+    function test_timeModeCanExecuteBelowConfiguredMaximum() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.0005 ether);
+        vm.warp(block.timestamp + 60);
+
+        (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
+        assertEq(amount, 0.0005 ether);
+        assertEq(uint8(readiness), uint8(BuybackReadiness.Ready));
+
+        vm.prank(caller);
+        vault.executeBuyback(amount, 0.0004 ether, 0, uint64(block.timestamp + 1 minutes));
+        assertEq(address(vault).balance, 0);
+        assertEq(vault.totalBuybackBNB(), 0.0005 ether);
+    }
+
+    function test_reserveChangeAfterQuoteRevertsWithoutAdvancingState() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+        pairContract.setReservesForTest(100 ether, 0.5 ether);
+        (uint256 quotedAmount,) = vault.previewBuyback();
+        assertEq(quotedAmount, 0.005 ether);
+
+        pairContract.setReservesForTest(100 ether, 0.4 ether);
+        vm.expectRevert(abi.encodeWithSelector(UnsafeExecutionAmount.selector, 0.005 ether, 0.004 ether));
+        vm.prank(caller);
+        vault.executeBuyback(quotedAmount, 0.003 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(vault.buybackCount(), 0);
+        assertEq(vault.lastExecuteTime(), 0);
+        assertEq(address(vault).balance, 0.05 ether);
+    }
+
+    function test_balanceIncreaseAfterQuoteCannotBlockExecution() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.005 ether);
+        vm.warp(block.timestamp + 60);
+        (uint256 quotedAmount,) = vault.previewBuyback();
+        assertEq(quotedAmount, 0.005 ether);
+
+        // 模拟报价后第三方向 receive() 捐赠 1 wei。若强制等于最新预览，这会成为廉价 DoS。
+        vm.deal(address(vault), 0.005 ether + 1);
+        vm.prank(caller);
+        vault.executeBuyback(quotedAmount, 0.004 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(vault.buybackCount(), 1);
+        assertEq(vault.totalBuybackBNB(), quotedAmount);
+        assertEq(address(vault).balance, 1);
+    }
+
+    function test_keeperCannotChooseAmountBelowEconomicMinimum() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+
+        vm.expectRevert(abi.encodeWithSelector(UnsafeExecutionAmount.selector, 0.00005 ether, 0.01 ether));
+        vm.prank(caller);
+        vault.executeBuyback(0.00005 ether, 0.00004 ether, 0, uint64(block.timestamp + 1 minutes));
+
+        assertEq(vault.buybackCount(), 0);
+        assertEq(vault.lastExecuteTime(), 0);
+        assertEq(address(vault).balance, 0.05 ether);
+    }
+
+    function test_emptyPoolReportsExplicitReason() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+        pairContract.setReservesForTest(0, 0);
+
+        (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
+        assertEq(amount, 0);
+        assertEq(uint8(readiness), uint8(BuybackReadiness.InvalidPoolReserves));
+
+        vm.expectRevert(InvalidPoolReserves.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0.001 ether, 0.0009 ether, 0, uint64(block.timestamp + 1 minutes));
+    }
+
+    function test_reserveCapBelowEconomicMinimumReportsExplicitReason() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+        pairContract.setReservesForTest(100 ether, 0.005 ether); // 1% = 0.00005 BNB
+
+        (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
+        assertEq(amount, 0);
+        assertEq(uint8(readiness), uint8(BuybackReadiness.ReserveCapBelowMinimum));
+        assertFalse(vault.canExecuteBuyback());
+
+        vm.expectRevert(ReserveCapBelowMinimum.selector);
+        vm.prank(caller);
+        vault.executeBuyback(0.00005 ether, 0.00004 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_lpBuybackAndBurnOnlySelf() public {
@@ -615,7 +721,7 @@ contract BuybackVaultTest is Test {
         vm.warp(block.timestamp + 60);
         vm.prank(caller);
         vm.expectRevert(InsufficientBalance.selector);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_nonKeeperCannotExecute() public {
@@ -625,7 +731,7 @@ contract BuybackVaultTest is Test {
 
         vm.expectRevert(UnauthorizedKeeper.selector);
         vm.prank(address(0xBAD));
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
     function test_keeperRoleIsReadDynamically() public {
@@ -636,7 +742,7 @@ contract BuybackVaultTest is Test {
         _keepers[caller] = false;
         vm.expectRevert(UnauthorizedKeeper.selector);
         vm.prank(caller);
-        vault.executeBuyback(0.009 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0.01 ether, 0.009 ether, 0, uint64(block.timestamp + 1 minutes));
 
         _keepers[replacementKeeper] = true;
         _execute(vault, replacementKeeper);

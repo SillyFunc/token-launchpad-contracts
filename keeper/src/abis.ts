@@ -220,6 +220,46 @@ export const vaultAbi = [
   },
   {
     type: "function",
+    name: "previewBuyback",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "executableAmount", type: "uint256" },
+      { name: "readiness", type: "uint8" },
+    ],
+  },
+  {
+    type: "function",
+    name: "mode",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "executeBuyback",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "expectedBnbIn", type: "uint256" },
+      { name: "minTokenOut", type: "uint256" },
+      { name: "minLpTokenOut", type: "uint256" },
+      { name: "deadline", type: "uint64" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/// @dev 2026-09-22 动态执行额上线前的固定金额 Vault ABI，仅用于平滑服务既有金库。
+export const legacyVaultAbi = [
+  {
+    type: "function",
+    name: "canExecuteBuyback",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
     name: "buybackAmount",
     stateMutability: "view",
     inputs: [],

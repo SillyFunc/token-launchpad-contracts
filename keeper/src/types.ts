@@ -87,6 +87,17 @@ export interface PoolStateSnapshot {
   taxExpirationTime: number;
 }
 
+/// @dev 0…5 必须与 Solidity `BuybackReadiness` 顺序一致；6 仅表示旧版固定金额 Vault 的兼容状态。
+export enum BuybackReadiness {
+  Ready = 0,
+  InsufficientBalance = 1,
+  TriggerBalanceNotMet = 2,
+  TooEarly = 3,
+  InvalidPoolReserves = 4,
+  ReserveCapBelowMinimum = 5,
+  LegacyFixedAmountExceedsReserveCap = 6,
+}
+
 export interface AssetSnapshot {
   asset: AssetRow;
   blockNumber: bigint;
@@ -105,8 +116,9 @@ export interface AssetSnapshot {
   lpTokenBalance: bigint;
   lpQuoteBalance: bigint;
   pairTotalSupply: bigint;
-  vaultCanExecute: boolean;
-  vaultBuybackAmount: bigint;
+  vaultVersion: 0 | 1 | 2;
+  vaultExecutableAmount: bigint;
+  vaultReadiness: BuybackReadiness;
   vaultMode: number;
 }
 

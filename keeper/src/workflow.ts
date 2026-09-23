@@ -5,6 +5,7 @@ import {
   finishRun,
   listDueAssets,
   markAssetChecked,
+  recordBuybackReadiness,
   recordTransaction,
   startRun,
 } from "./db";
@@ -58,6 +59,16 @@ export class KeeperWorkflow extends WorkflowEntrypoint<Env, KeeperWorkflowPayloa
           try {
             const snapshot = await inspectAsset(config, asset);
             await storeCurrentSample(this.env.DB, config, snapshot);
+            if (snapshot.asset.vault) {
+              await recordBuybackReadiness(
+                this.env.DB,
+                config.chainId,
+                getAddress(snapshot.asset.token),
+                snapshot.vaultReadiness,
+                snapshot.vaultExecutableAmount,
+                now,
+              );
+            }
             planned = await Promise.all([
               buildExecutionPlan(this.env.DB, config, snapshot, "tax", now),
               buildExecutionPlan(this.env.DB, config, snapshot, "liquidity", now),

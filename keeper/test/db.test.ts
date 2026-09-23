@@ -1,6 +1,7 @@
 // 连续跳过告警：清算停摆时 transactions 里只有 skipped、alerts 为空，
 // 运维只看告警会误判为健康。这里覆盖去重、阈值与成交后自动解除。
 import { beforeEach, describe, expect, it } from "vitest";
+import { BuybackReadiness } from "../src/types";
 import type { SignerResult } from "../src/types";
 
 const sqliteModule = (await import("node:sqlite").catch(() => null)) as
@@ -57,7 +58,7 @@ class D1Shim {
   }
 }
 
-const { recordTransaction } = await import("../src/db");
+const { recordBuybackReadiness, recordTransaction } = await import("../src/db");
 
 const TOKEN = "0x77f117df69e4345fCfF11Bc4AFE4eB41339F8888";
 const TARGET = "0x60ce1D8E40473668932845DD3c3E34Dd0B8c178d";
@@ -153,5 +154,57 @@ withSqlite("skip streak alerts", () => {
       .first();
     expect(transaction?.status).toBe("submitted");
     expect(transaction?.tx_hash).toBe(`0x${"12".repeat(32)}`);
+  });
+
+  it("连续低流动性状态达到阈值时告警并保存最新预览", async () => {
+    for (let index = 0; index < 5; index++) {
+      await recordBuybackReadiness(
+        db as never,
+        97,
+        TOKEN as never,
+        BuybackReadiness.ReserveCapBelowMinimum,
+        0n,
+        1_700_000_000 + index,
+      );
+    }
+
+    const alerts = await openAlerts();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].code).toBe(`buyback-liquidity:${TOKEN.toLowerCase()}`);
+    expect(alerts[0].message).toContain("ReserveCapBelowMinimum");
+
+    const state = await db
+      .prepare("SELECT value FROM settings WHERE key=?1")
+      .bind(`buyback_readiness:97:${TOKEN.toLowerCase()}`)
+      .first();
+    expect(JSON.parse(String(state?.value))).toEqual({
+      readiness: BuybackReadiness.ReserveCapBelowMinimum,
+      readinessName: "ReserveCapBelowMinimum",
+      executableAmount: "0",
+    });
+  });
+
+  it("回购恢复 Ready 后自动解除流动性告警", async () => {
+    for (let index = 0; index < 5; index++) {
+      await recordBuybackReadiness(
+        db as never,
+        97,
+        TOKEN as never,
+        BuybackReadiness.InvalidPoolReserves,
+        0n,
+        1_700_000_000 + index,
+      );
+    }
+    expect(await openAlerts()).toHaveLength(1);
+
+    await recordBuybackReadiness(
+      db as never,
+      97,
+      TOKEN as never,
+      BuybackReadiness.Ready,
+      250_000_000_000_000n,
+      1_700_000_100,
+    );
+    expect(await openAlerts()).toHaveLength(0);
   });
 });

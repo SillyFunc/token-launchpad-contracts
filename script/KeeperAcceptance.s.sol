@@ -85,6 +85,7 @@ contract KeeperAcceptance is Script {
             firstExecuteAt: uint64(block.timestamp + vm.envOr("ACCEPTANCE_FIRST_EXECUTE_DELAY", uint256(600))),
             intervalSeconds: uint64(vm.envOr("ACCEPTANCE_INTERVAL_SECONDS", uint256(60))),
             triggerAmount: vm.envOr("ACCEPTANCE_TRIGGER_AMOUNT", uint256(0)),
+            // 单次上限；实际执行额还会被金库余额与 Pair WBNB 储备的 1% 安全线动态缩小
             buybackAmount: vm.envOr("ACCEPTANCE_BUYBACK_AMOUNT", uint256(0.001 ether))
         });
 
@@ -119,6 +120,36 @@ contract KeeperAcceptance is Script {
         console2.log("creator token balance:", IERC20(token).balanceOf(msg.sender));
         _logState(artifact);
         console2.log("next: wait >= 8 minutes, then run status() and read D1 keeper_runs/transactions");
+    }
+
+    /// @notice 恢复 create() 在代币已创建、已领取，但加池前因本地广播文件锁中断的验收。
+    /// @dev 只允许对当前 Coordinator 注册的、尚无 LP 的验收资产使用；不会重复创建代币。
+    function completeSetup() external {
+        _requireTestnet();
+        Artifact memory artifact = _readArtifact();
+        CoordinatorFactory coordinator = _coordinator();
+        require(coordinator.tokenVaults(artifact.token) == artifact.vault, "vault not registered in coordinator");
+        require(FlapTaxTokenV3(artifact.token).mainPool() == artifact.pair, "pair mismatch");
+        require(IPancakePair(artifact.pair).totalSupply() == 0, "pool already initialized");
+
+        uint256 sellTokens = vm.envOr("ACCEPTANCE_SELL_TOKENS", DEFAULT_SELL_TOKENS);
+        uint256 rounds = vm.envOr("ACCEPTANCE_SELL_ROUNDS", uint256(2));
+        require(
+            IERC20(artifact.token).balanceOf(msg.sender) >= artifact.lpTokens + sellTokens * rounds,
+            "creator tokens insufficient"
+        );
+
+        address router = coordinator.routerAddress();
+        vm.startBroadcast();
+        IERC20(artifact.token).approve(router, artifact.lpTokens);
+        IPancakeRouter02(router).addLiquidityETH{value: artifact.lpBnb}(
+            artifact.token, artifact.lpTokens, 0, 0, msg.sender, block.timestamp + DEADLINE_DELAY
+        );
+        IERC20(artifact.token).approve(router, type(uint256).max);
+        _sell(router, artifact.token, sellTokens, rounds);
+        vm.stopBroadcast();
+
+        _logState(artifact);
     }
 
     // -----------------------------------------------------------------------
@@ -248,7 +279,9 @@ contract KeeperAcceptance is Script {
         VaultStats memory stats = BuybackVault(payable(artifact.vault)).getVaultStats();
         console2.log("vault balance:", artifact.vault.balance);
         console2.log("vault canExecute:", stats.canExecute);
-        console2.log("vault buybackAmount:", stats.buybackAmount);
+        console2.log("vault maxBuybackAmount:", stats.buybackAmount);
+        console2.log("vault executableBuybackAmount:", stats.executableBuybackAmount);
+        console2.log("vault readiness:", uint8(stats.readiness));
         console2.log("vault buybackCount:", stats.buybackCount);
         console2.log("vault totalBurnedToken:", stats.totalBurnedToken);
     }

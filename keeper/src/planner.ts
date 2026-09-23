@@ -1,5 +1,5 @@
 import { encodeFunctionData, getAddress, zeroAddress, type Address } from "viem";
-import { pairAbi, taxProcessorAbi, tokenAbi, vaultAbi } from "./abis";
+import { legacyVaultAbi, pairAbi, taxProcessorAbi, tokenAbi, vaultAbi } from "./abis";
 import { loadAnchorSamples, storeSample } from "./db";
 import {
   activeTaxRate,
@@ -11,6 +11,7 @@ import {
   protectedMinimumOut,
 } from "./policy";
 import { batchContractCalls, getLatestBlock, type ContractCall } from "./rpc";
+import { BuybackReadiness } from "./types";
 import type {
   AssetRow,
   AssetSnapshot,
@@ -23,9 +24,11 @@ import type {
 
 const LP_SWAP_BPS = 4_990n;
 const BPS = 10_000n;
+const BUYBACK_MAX_RESERVE_BPS = 100n;
 
 type PoolStateResult = readonly [number, number, number, boolean, bigint, bigint, number | bigint];
 type ReservesResult = readonly [bigint, bigint, number];
+type VaultPreviewResult = readonly [bigint, number | bigint];
 type FeeConfigObject = {
   marketBps: number;
   deflationBps: number;
@@ -60,13 +63,6 @@ export async function inspectAsset(config: KeeperConfig, asset: AssetRow): Promi
     { address: asset.tax_processor, abi: taxProcessorAbi, functionName: "lpQuoteBalance" },
     { address: asset.pair, abi: pairAbi, functionName: "totalSupply" },
   ];
-  if (asset.vault) {
-    calls.push(
-      { address: asset.vault, abi: vaultAbi, functionName: "canExecuteBuyback" },
-      { address: asset.vault, abi: vaultAbi, functionName: "buybackAmount" },
-      { address: asset.vault, abi: vaultAbi, functionName: "mode" },
-    );
-  }
   const values = await batchContractCalls(config.readRpcUrl, calls, block.tag);
   const token0 = getAddress(String(values[0]));
   const token1 = getAddress(String(values[1]));
@@ -89,6 +85,61 @@ export async function inspectAsset(config: KeeperConfig, asset: AssetRow): Promi
   };
   const pool = values[3] as PoolStateResult;
   const feeConfig = values[5] as FeeConfigResult;
+  let vaultVersion: 0 | 1 | 2 = 0;
+  let vaultExecutableAmount = 0n;
+  let vaultReadiness = BuybackReadiness.InsufficientBalance;
+  let vaultMode = 0;
+  if (asset.vault) {
+    try {
+      const vaultValues = await batchContractCalls(
+        config.readRpcUrl,
+        [
+          { address: asset.vault, abi: vaultAbi, functionName: "previewBuyback" },
+          { address: asset.vault, abi: vaultAbi, functionName: "mode" },
+        ],
+        block.tag,
+      );
+      const preview = vaultValues[0] as VaultPreviewResult;
+      vaultVersion = 2;
+      vaultExecutableAmount = preview[0];
+      vaultReadiness = numberValue(preview[1]) as BuybackReadiness;
+      if (vaultReadiness > BuybackReadiness.ReserveCapBelowMinimum) {
+        throw new Error(`Vault ${asset.vault} returned invalid readiness ${vaultReadiness}`);
+      }
+      vaultMode = numberValue(vaultValues[1] as number | bigint);
+    } catch (previewError) {
+      try {
+        const legacyValues = await batchContractCalls(
+          config.readRpcUrl,
+          [
+            { address: asset.vault, abi: legacyVaultAbi, functionName: "canExecuteBuyback" },
+            { address: asset.vault, abi: legacyVaultAbi, functionName: "buybackAmount" },
+            { address: asset.vault, abi: legacyVaultAbi, functionName: "mode" },
+          ],
+          block.tag,
+        );
+        const canExecute = legacyValues[0] as boolean;
+        const fixedAmount = legacyValues[1] as bigint;
+        vaultVersion = 1;
+        vaultExecutableAmount = canExecute ? fixedAmount : 0n;
+        vaultMode = numberValue(legacyValues[2] as number | bigint);
+        if (canExecute) {
+          vaultReadiness = BuybackReadiness.Ready;
+        } else if (sample.reserveToken === 0n || sample.reserveWbnb === 0n) {
+          vaultReadiness = BuybackReadiness.InvalidPoolReserves;
+        } else if (fixedAmount > (sample.reserveWbnb * BUYBACK_MAX_RESERVE_BPS) / BPS) {
+          vaultReadiness = BuybackReadiness.LegacyFixedAmountExceedsReserveCap;
+        } else {
+          // 旧 ABI 无法区分余额/时间/触发金额；三者都是无需告警的正常等待。
+          vaultReadiness = BuybackReadiness.TooEarly;
+        }
+      } catch (legacyError) {
+        throw new Error(
+          `Vault ${asset.vault} supports neither current nor legacy ABI: preview=${String(previewError)}; legacy=${String(legacyError)}`,
+        );
+      }
+    }
+  }
   return {
     asset,
     blockNumber: block.number,
@@ -112,9 +163,10 @@ export async function inspectAsset(config: KeeperConfig, asset: AssetRow): Promi
     lpTokenBalance: values[6] as bigint,
     lpQuoteBalance: values[7] as bigint,
     pairTotalSupply: values[8] as bigint,
-    vaultCanExecute: asset.vault ? (values[9] as boolean) : false,
-    vaultBuybackAmount: asset.vault ? (values[10] as bigint) : 0n,
-    vaultMode: asset.vault ? numberValue(values[11] as number | bigint) : 0,
+    vaultVersion,
+    vaultExecutableAmount,
+    vaultReadiness,
+    vaultMode,
   };
 }
 
@@ -280,8 +332,14 @@ export async function buildExecutionPlan(
       args: [amountIn, minimumOut, maximumQuote, secondaryMinimumOut, deadline],
     });
   } else {
-    if (!snapshot.asset.vault || snapshot.asset.vault === zeroAddress || !snapshot.vaultCanExecute) return null;
-    amountIn = snapshot.vaultBuybackAmount;
+    if (
+      !snapshot.asset.vault ||
+      snapshot.asset.vault === zeroAddress ||
+      snapshot.vaultReadiness !== BuybackReadiness.Ready
+    ) {
+      return null;
+    }
+    amountIn = snapshot.vaultExecutableAmount;
     if (amountIn === 0n) return null;
     currentQuote = quoteBuyback(
       amountIn,
@@ -324,10 +382,14 @@ export async function buildExecutionPlan(
       secondaryMinimumOut = protectedLpOut.minimumOut;
     }
     target = getAddress(snapshot.asset.vault);
+    const executeAbi = snapshot.vaultVersion === 1 ? legacyVaultAbi : vaultAbi;
     data = encodeFunctionData({
-      abi: vaultAbi,
+      abi: executeAbi,
       functionName: "executeBuyback",
-      args: [minimumOut, snapshot.vaultMode === 1 ? secondaryMinimumOut : 0n, deadline],
+      args:
+        snapshot.vaultVersion === 1
+          ? [minimumOut, snapshot.vaultMode === 1 ? secondaryMinimumOut : 0n, deadline]
+          : [amountIn, minimumOut, snapshot.vaultMode === 1 ? secondaryMinimumOut : 0n, deadline],
     });
   }
 

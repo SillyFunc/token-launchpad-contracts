@@ -34,8 +34,10 @@ contract BuybackVaultBscForkTest is Test {
         vm.deal(address(this), 10 ether);
 
         token.approve(ROUTER, type(uint256).max);
-        router.addLiquidityETH{value: 1 ether}(
-            address(token), 100_000 ether, 99_000 ether, 0.99 ether, address(this), block.timestamp + 5 minutes
+        // 故意使用低 WBNB 底池：配置上限 0.001 BNB 会高于池储备的 1%，
+        // 用真实 Pancake Pair 验证 Vault 会缩小实际输入而不是永久阻塞。
+        router.addLiquidityETH{value: 0.05 ether}(
+            address(token), 100_000 ether, 99_000 ether, 0.0495 ether, address(this), block.timestamp + 5 minutes
         );
         address pair = IPancakeFactory(router.factory()).getPair(address(token), wbnb);
         assertTrue(pair != address(0));
@@ -45,21 +47,27 @@ contract BuybackVaultBscForkTest is Test {
 
         BuybackVault tokenVault = _createVault(factory, token, pair, wbnb, BuybackMode.TokenBurn);
         vm.deal(address(tokenVault), 0.01 ether);
-        uint256 minTokenOut = (_quote(router, wbnb, address(token), 0.001 ether) * 95) / 100;
-        tokenVault.executeBuyback(minTokenOut, 0, uint64(block.timestamp + 5 minutes));
+        (uint256 tokenAmount,) = tokenVault.previewBuyback();
+        assertLt(tokenAmount, tokenVault.buybackAmount());
+        assertGe(tokenAmount, tokenVault.MIN_EXECUTION_AMOUNT());
+        uint256 minTokenOut = (_quote(router, wbnb, address(token), tokenAmount) * 95) / 100;
+        tokenVault.executeBuyback(tokenAmount, minTokenOut, 0, uint64(block.timestamp + 5 minutes));
         assertGt(token.balanceOf(DEAD), 0);
 
         BuybackVault lpVault = _createVault(factory, token, pair, wbnb, BuybackMode.LpBurn);
         vm.deal(address(lpVault), 0.01 ether);
-        uint256 minFallbackOut = (_quote(router, wbnb, address(token), 0.001 ether) * 95) / 100;
-        uint256 lpSwapAmount = (0.001 ether * lpVault.LP_SWAP_BPS()) / lpVault.BPS_DENOMINATOR();
+        (uint256 lpAmount,) = lpVault.previewBuyback();
+        assertLt(lpAmount, lpVault.buybackAmount());
+        assertGe(lpAmount, lpVault.MIN_EXECUTION_AMOUNT());
+        uint256 minFallbackOut = (_quote(router, wbnb, address(token), lpAmount) * 95) / 100;
+        uint256 lpSwapAmount = (lpAmount * lpVault.LP_SWAP_BPS()) / lpVault.BPS_DENOMINATOR();
         uint256 minLpOut = (_quote(router, wbnb, address(token), lpSwapAmount) * 95) / 100;
         uint256 deadLpBefore = IERC20(pair).balanceOf(DEAD);
-        lpVault.executeBuyback(minFallbackOut, minLpOut, uint64(block.timestamp + 5 minutes));
+        lpVault.executeBuyback(lpAmount, minFallbackOut, minLpOut, uint64(block.timestamp + 5 minutes));
 
         assertGt(IERC20(pair).balanceOf(DEAD), deadLpBefore);
         assertGt(lpVault.totalLpBurned(), 0);
-        assertLe(lpVault.totalBuybackBNB(), 0.001 ether);
+        assertLe(lpVault.totalBuybackBNB(), lpAmount);
     }
 
     function _createVault(

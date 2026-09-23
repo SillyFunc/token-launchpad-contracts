@@ -10,6 +10,7 @@ const mock = vi.hoisted(() => ({
   startRun: vi.fn(),
   finishRun: vi.fn(),
   markAssetChecked: vi.fn(),
+  recordBuybackReadiness: vi.fn(),
   recordTransaction: vi.fn(),
   heartbeat: vi.fn(async () => ({ active: false })),
   execute: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock("../src/db", () => ({
     },
   ],
   markAssetChecked: mock.markAssetChecked,
+  recordBuybackReadiness: mock.recordBuybackReadiness,
   recordTransaction: mock.recordTransaction,
 }));
 

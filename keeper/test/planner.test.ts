@@ -1,6 +1,9 @@
+import { decodeFunctionData } from "viem";
 import { describe, expect, it } from "vitest";
+import { legacyVaultAbi, vaultAbi } from "../src/abis";
 import { buildExecutionPlan } from "../src/planner";
 import { amountAfterTransferTax, getAmountOut } from "../src/policy";
+import { BuybackReadiness } from "../src/types";
 import type { AssetSnapshot, KeeperConfig, PairSample } from "../src/types";
 
 const token = "0x1111111111111111111111111111111111111111";
@@ -89,8 +92,9 @@ function snapshot(overrides: Partial<AssetSnapshot> = {}): AssetSnapshot {
     lpTokenBalance: 0n,
     lpQuoteBalance: 0n,
     pairTotalSupply: 10_000n,
-    vaultCanExecute: true,
-    vaultBuybackAmount: 1_000n,
+    vaultVersion: 2,
+    vaultExecutableAmount: 1_000n,
+    vaultReadiness: BuybackReadiness.Ready,
     vaultMode: 0,
     ...overrides,
   };
@@ -241,5 +245,49 @@ describe("execution planning", () => {
     expect(plan?.secondaryMinimumOut).toBeGreaterThan(0n);
     expect(plan?.secondaryMinimumOut).toBeLessThan(plan?.minimumOut ?? 0n);
     expect(plan?.deadline).toBe(10_300n);
+  });
+
+  it("binds the exact previewed BNB input into buyback calldata", async () => {
+    const plan = await buildExecutionPlan(
+      database(anchors()),
+      config,
+      snapshot({ vaultExecutableAmount: 777n }),
+      "buyback",
+      10_000,
+    );
+
+    expect(plan?.amountIn).toBe(777n);
+    const decoded = decodeFunctionData({ abi: vaultAbi, data: plan!.data });
+    expect(decoded.functionName).toBe("executeBuyback");
+    expect(decoded.args?.[0]).toBe(777n);
+  });
+
+  it("does not plan a buyback when the vault reports a non-ready reason", async () => {
+    await expect(
+      buildExecutionPlan(
+        database(anchors()),
+        config,
+        snapshot({
+          vaultExecutableAmount: 0n,
+          vaultReadiness: BuybackReadiness.ReserveCapBelowMinimum,
+        }),
+        "buyback",
+        10_000,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("keeps the legacy three-argument execution ABI for an old ready vault", async () => {
+    const plan = await buildExecutionPlan(
+      database(anchors()),
+      config,
+      snapshot({ vaultVersion: 1 }),
+      "buyback",
+      10_000,
+    );
+
+    const decoded = decodeFunctionData({ abi: legacyVaultAbi, data: plan!.data });
+    expect(decoded.functionName).toBe("executeBuyback");
+    expect(decoded.args).toHaveLength(3);
   });
 });
