@@ -1,0 +1,131 @@
+{
+  "transactions": [
+    {
+      "hash": null,
+      "transactionType": "CALL",
+      "contractName": "FlapTaxTokenV3",
+      "contractAddress": "0x324e365857c9e18304e9b7606f6a525adadc8888",
+      "function": "approve(address,uint256)",
+      "arguments": [
+        "0xD99D1c33F9fC3444f8101754aBC46c52416550D1",
+        "300000000000000000000000000"
+      ],
+      "transaction": {
+        "from": "0x463ca7fc1f217f00108778fb86b7599b87a821d3",
+        "to": "0x324e365857c9e18304e9b7606f6a525adadc8888",
+        "gas": "0x11812",
+        "value": "0x0",
+        "input": "0x095ea7b3000000000000000000000000d99d1c33f9fc3444f8101754abc46c52416550d1000000000000000000000000000000000000000000f8277896582678ac000000",
+        "nonce": "0xd6",
+        "chainId": "0x61"
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    },
+    {
+      "hash": null,
+      "transactionType": "CALL",
+      "contractName": null,
+      "contractAddress": "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+      "function": "addLiquidityETH(address,uint256,uint256,uint256,address,uint256)",
+      "arguments": [
+        "0x324e365857C9e18304E9B7606F6A525adADC8888",
+        "300000000000000000000000000",
+        "0",
+        "0",
+        "0x463cA7fC1f217f00108778fb86B7599b87a821D3",
+        "1790127679"
+      ],
+      "transaction": {
+        "from": "0x463ca7fc1f217f00108778fb86b7599b87a821d3",
+        "to": "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+        "gas": "0x72b7b",
+        "value": "0xb1a2bc2ec50000",
+        "input": "0xf305d719000000000000000000000000324e365857c9e18304e9b7606f6a525adadc8888000000000000000000000000000000000000000000f8277896582678ac00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000463ca7fc1f217f00108778fb86b7599b87a821d3000000000000000000000000000000000000000000000000000000006ab32e3f",
+        "nonce": "0xd7",
+        "chainId": "0x61"
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    },
+    {
+      "hash": null,
+      "transactionType": "CALL",
+      "contractName": "FlapTaxTokenV3",
+      "contractAddress": "0x324e365857c9e18304e9b7606f6a525adadc8888",
+      "function": "approve(address,uint256)",
+      "arguments": [
+        "0xD99D1c33F9fC3444f8101754aBC46c52416550D1",
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+      ],
+      "transaction": {
+        "from": "0x463ca7fc1f217f00108778fb86b7599b87a821d3",
+        "to": "0x324e365857c9e18304e9b7606f6a525adadc8888",
+        "gas": "0x119b8",
+        "value": "0x0",
+        "input": "0x095ea7b3000000000000000000000000d99d1c33f9fc3444f8101754abc46c52416550d1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "nonce": "0xd8",
+        "chainId": "0x61"
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    },
+    {
+      "hash": null,
+      "transactionType": "CALL",
+      "contractName": null,
+      "contractAddress": "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+      "function": "swapExactTokensForETHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)",
+      "arguments": [
+        "100000000000000000000000000",
+        "0",
+        "[0x324e365857C9e18304E9B7606F6A525adADC8888, 0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd]",
+        "0x463cA7fC1f217f00108778fb86B7599b87a821D3",
+        "1790127679"
+      ],
+      "transaction": {
+        "from": "0x463ca7fc1f217f00108778fb86b7599b87a821d3",
+        "to": "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+        "gas": "0x54c0a",
+        "value": "0x0",
+        "input": "0x791ac94700000000000000000000000000000000000000000052b7d2dcc80cd2e4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000463ca7fc1f217f00108778fb86b7599b87a821d3000000000000000000000000000000000000000000000000000000006ab32e3f0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000324e365857c9e18304e9b7606f6a525adadc8888000000000000000000000000ae13d989dac2f0debff460ac112a837c89baa7cd",
+        "nonce": "0xd9",
+        "chainId": "0x61"
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    },
+    {
+      "hash": null,
+      "transactionType": "CALL",
+      "contractName": null,
+      "contractAddress": "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+      "function": "swapExactTokensForETHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)",
+      "arguments": [
+        "100000000000000000000000000",
+        "0",
+        "[0x324e365857C9e18304E9B7606F6A525adADC8888, 0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd]",
+        "0x463cA7fC1f217f00108778fb86B7599b87a821D3",
+        "1790127679"
+      ],
+      "transaction": {
+        "from": "0x463ca7fc1f217f00108778fb86b7599b87a821d3",
+        "to": "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+        "gas": "0x468cd",
+        "value": "0x0",
+        "input": "0x791ac94700000000000000000000000000000000000000000052b7d2dcc80cd2e4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000463ca7fc1f217f00108778fb86b7599b87a821d3000000000000000000000000000000000000000000000000000000006ab32e3f0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000324e365857c9e18304e9b7606f6a525adadc8888000000000000000000000000ae13d989dac2f0debff460ac112a837c89baa7cd",
+        "nonce": "0xda",
+        "chainId": "0x61"
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    }
+  ],
+  "receipts": [],
+  "libraries": [],
+  "pending": [],
+  "returns": {},
+  "timestamp": 1790126503203,
+  "chain": 97,
+  "commit": "757613e"
+}

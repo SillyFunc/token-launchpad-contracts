@@ -9,12 +9,12 @@ import {IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
 import {TokenFactory, TokenConfig} from "src/TokenFactory.sol";
 import {PresaleFactory, PresaleConfig} from "src/PresaleFactory.sol";
 import {PRESALE, ITokenMigration, ZeroMinLiquidity} from "src/Presale.sol";
-import {TaxProcessor} from "src/TaxProcessor.sol";
 import {IFlapTaxTokenV3} from "src/lib/interfaces/IFlapTaxTokenV3.sol";
-import {ITaxProcessor, TaxProcessorInitParams} from "src/lib/interfaces/ITaxProcessor.sol";
+import {TaxProcessorInitParams} from "src/lib/interfaces/ITaxProcessor.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
 import {BuybackVaultFactory} from "src/BuybackVaultFactory.sol";
 import {BuybackConfig} from "src/BuybackVault.sol";
+import {TaxInfrastructureFactory} from "src/TaxInfrastructureFactory.sol";
 
 // ---------------------------------------------------------------------------
 // 自定义错误
@@ -45,11 +45,27 @@ error InvalidAllocation();
 error InvalidVanitySuffix();
 error BuybackVaultFactoryNotSet();
 error ZeroBuybackVaultFactory();
+error InvalidBuybackVaultFactory();
+error InvalidAntiFarmerDuration();
+error TaxInfrastructureFactoryNotSet();
+error ZeroTaxInfrastructureFactory();
+error InvalidTaxInfrastructureFactory();
+error InvalidTaxDistribution();
+error InvalidMinimumShareBalance();
+error VaultRequiresMarketChannel();
 
 // ============================================================================
 // CoordinatorFactory - 一站式发币编排（代币 + Pair + TaxProcessor + 托管仓）
 // ============================================================================
 contract CoordinatorFactory is AccessControl, ReentrancyGuard {
+    /// @notice 平台自动化执行者。仅负责触发税费处理与回购，不拥有资金管理权限。
+    bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+    /// @notice 平台统一税期。对齐 Flap 官方上限：100 年；创建者不能覆盖。
+    uint256 public constant TAX_DURATION = 100 * 365 days;
+    /// @notice Anti-Farmer 可配置上限。对齐 Flap 产品边界：0…365 天。
+    uint256 public constant MAX_ANTI_FARMER_DURATION = 365 days;
+    uint256 public constant MAX_MINIMUM_SHARE_BALANCE = 1_000_000_000 ether;
+
     TokenFactory public tokenFactory;
     PresaleFactory public presaleFactory;
     address public routerAddress;
@@ -81,6 +97,10 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     mapping(address => address) public tokenVaults;
     /// @notice 回购金库工厂。一次性 admin 配置，不改构造函数以免全量测试签名爆炸。
     address public buybackVaultFactory;
+    /// @notice TaxProcessor/Dividend clone factory. Configured once after Coordinator deployment.
+    address public taxInfrastructureFactory;
+    mapping(address => address) public tokenTaxProcessors;
+    mapping(address => address) public tokenDividends;
     /// @notice 代币 → 预售条款是否已配置：每仓仅允许一次 setupPresale（开售后底层条款冻结）
     mapping(address => bool) public tokenConfigured;
     mapping(address => address[]) public creatorTokens;
@@ -113,6 +133,8 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     event TokenAddressReserved(address indexed token, address indexed reserver, uint256 fee);
     event ExcessRefunded(address indexed to, uint256 amount);
     event BuybackVaultFactorySet(address indexed factory);
+    event TaxInfrastructureFactorySet(address indexed factory);
+    event TaxInfrastructureAttached(address indexed token, address indexed taxProcessor, address dividend);
     event BuybackVaultAttached(address indexed token, address indexed vault, uint8 mode, uint8 trigger);
 
     constructor(address _tokenFactory, address _presaleFactory, address _router) {
@@ -157,6 +179,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         returns (address token, address presale, address vault)
     {
         if (buybackVaultFactory == address(0)) revert BuybackVaultFactoryNotSet();
+        if (tokenConfig.marketBps == 0) revert VaultRequiresMarketChannel();
         _assertCanCreate(tokenConfig, salt);
 
         vault = BuybackVaultFactory(buybackVaultFactory).createVault();
@@ -174,9 +197,21 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
 
     function _assertCanCreate(TokenConfig memory tokenConfig, bytes32 salt) internal view {
         if (!factoryEnabled) revert FactoryDisabled();
+        if (taxInfrastructureFactory == address(0)) revert TaxInfrastructureFactoryNotSet();
         if (msg.value < creationFee) revert InsufficientCreationFee();
         if (bytes(tokenConfig.name).length == 0) revert EmptyTokenName();
         if (bytes(tokenConfig.symbol).length == 0) revert EmptyTokenSymbol();
+        if (tokenConfig.antiFarmerDuration > MAX_ANTI_FARMER_DURATION) revert InvalidAntiFarmerDuration();
+        if (
+            uint256(tokenConfig.marketBps) + tokenConfig.deflationBps + tokenConfig.lpBps + tokenConfig.dividendBps
+                != 10_000
+        ) revert InvalidTaxDistribution();
+        if (tokenConfig.dividendBps == 0) {
+            if (tokenConfig.minimumShareBalance != 0) revert InvalidMinimumShareBalance();
+        } else if (tokenConfig.minimumShareBalance == 0 || tokenConfig.minimumShareBalance > MAX_MINIMUM_SHARE_BALANCE)
+        {
+            revert InvalidMinimumShareBalance();
+        }
         if (salt == bytes32(0)) revert InvalidSalt();
         address predicted = tokenFactory.predictTokenAddress(salt);
         if (uint160(predicted) & 0xFFFF != VANITY_SUFFIX) revert InvalidVanitySuffix();
@@ -193,31 +228,15 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         token = bundle.token;
         if (token == address(0)) revert TokenCreationFailed();
 
-        address taxProcessor = address(new TaxProcessor());
-
-        IFlapTaxTokenV3(token).initialize(_buildInitParams(tokenConfig, bundle, taxProcessor));
-
-        ITaxProcessor(taxProcessor)
-            .initialize(
-                TaxProcessorInitParams({
-                quoteToken: _wbnb(),
-                router: routerAddress,
-                feeReceiver: tokenConfig.feeRecipient,
-                marketAddress: address(0),
-                dividendAddress: address(0),
-                taxToken: token,
-                feeRate: 0,
-                marketBps: 0,
-                deflationBps: 0,
-                lpBps: 0,
-                dividendBps: 0,
-                dividendToken: address(0),
-                commissionReceiver: address(0),
-                commissionBps: 0,
-                converter: address(0),
-                liqExpectedOutputAmount: tokenConfig.liqExpectedOutputAmount
-            })
+        (address taxProcessor, address dividend) = TaxInfrastructureFactory(taxInfrastructureFactory)
+            .createInfrastructure(
+                _buildTaxProcessorParams(tokenConfig, token), bundle.pair, tokenConfig.minimumShareBalance
             );
+
+        IFlapTaxTokenV3(token).initialize(_buildInitParams(tokenConfig, bundle, taxProcessor, dividend));
+        tokenTaxProcessors[token] = taxProcessor;
+        tokenDividends[token] = dividend;
+        emit TaxInfrastructureAttached(token, taxProcessor, dividend);
 
         presale = presaleFactory.createPresale(routerAddress, msg.sender);
         PRESALE(payable(presale)).setCoinAndPair(token, bundle.pair);
@@ -321,7 +340,8 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     function _buildInitParams(
         TokenConfig memory tokenConfig,
         TokenFactory.TokenBundle memory bundle,
-        address taxProcessor
+        address taxProcessor,
+        address dividend
     ) internal view returns (IFlapTaxTokenV3.InitParams memory) {
         address[] memory pools = new address[](1);
         pools[0] = bundle.pair;
@@ -333,13 +353,39 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
             buyTax: tokenConfig.buyTax,
             sellTax: tokenConfig.sellTax,
             taxProcessor: taxProcessor,
-            dividendContract: address(0), // 单通道模型：无 Dividend 实例
+            dividendContract: dividend,
             quoteToken: _wbnb(),
             liqExpectedOutputAmount: tokenConfig.liqExpectedOutputAmount,
-            taxDuration: tokenConfig.taxDuration,
+            taxDuration: TAX_DURATION,
             pools: pools,
             v2Router: routerAddress,
             antiFarmerDuration: tokenConfig.antiFarmerDuration
+        });
+    }
+
+    function _buildTaxProcessorParams(TokenConfig memory tokenConfig, address token)
+        internal
+        view
+        returns (TaxProcessorInitParams memory)
+    {
+        address wbnb_ = _wbnb();
+        return TaxProcessorInitParams({
+            quoteToken: wbnb_,
+            router: routerAddress,
+            feeReceiver: tokenConfig.feeRecipient,
+            marketAddress: tokenConfig.feeRecipient,
+            dividendAddress: address(0),
+            taxToken: token,
+            feeRate: 0,
+            marketBps: tokenConfig.marketBps,
+            deflationBps: tokenConfig.deflationBps,
+            lpBps: tokenConfig.lpBps,
+            dividendBps: tokenConfig.dividendBps,
+            dividendToken: wbnb_,
+            commissionReceiver: address(0),
+            commissionBps: 0,
+            converter: address(0),
+            liqExpectedOutputAmount: tokenConfig.liqExpectedOutputAmount
         });
     }
 
@@ -378,9 +424,38 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     // 管理
     // ---------------------------------------------------------------------------
 
+    function setTaxInfrastructureFactory(address factory) external onlyAdmin {
+        if (taxInfrastructureFactory != address(0)) revert AlreadyConfigured();
+        if (factory == address(0)) revert ZeroTaxInfrastructureFactory();
+        if (factory.code.length == 0) revert InvalidTaxInfrastructureFactory();
+        TaxInfrastructureFactory candidate = TaxInfrastructureFactory(factory);
+        if (candidate.keeperRegistry() != address(this)) revert InvalidTaxInfrastructureFactory();
+        if (!candidate.hasRole(candidate.COORDINATOR_ROLE(), address(this))) revert InvalidTaxInfrastructureFactory();
+        taxInfrastructureFactory = factory;
+        emit TaxInfrastructureFactorySet(factory);
+    }
+
     function setBuybackVaultFactory(address factory) external onlyAdmin {
         if (buybackVaultFactory != address(0)) revert AlreadyConfigured();
         if (factory == address(0)) revert ZeroBuybackVaultFactory();
+        if (factory.code.length == 0) revert InvalidBuybackVaultFactory();
+        BuybackVaultFactory candidate = BuybackVaultFactory(factory);
+        try candidate.keeperRegistry() returns (address registry) {
+            if (registry != address(this)) revert InvalidBuybackVaultFactory();
+        } catch {
+            revert InvalidBuybackVaultFactory();
+        }
+        bytes32 coordinatorRole;
+        try candidate.COORDINATOR_ROLE() returns (bytes32 role) {
+            coordinatorRole = role;
+        } catch {
+            revert InvalidBuybackVaultFactory();
+        }
+        try candidate.hasRole(coordinatorRole, address(this)) returns (bool authorized) {
+            if (!authorized) revert InvalidBuybackVaultFactory();
+        } catch {
+            revert InvalidBuybackVaultFactory();
+        }
         buybackVaultFactory = factory;
         emit BuybackVaultFactorySet(factory);
     }

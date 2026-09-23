@@ -16,6 +16,7 @@ import {
 import {CoordinatorFactory, CreatorBuyTokensWithoutFunding} from "src/CoordinatorFactory.sol";
 import {TokenFactory, TokenConfig} from "src/TokenFactory.sol";
 import {PresaleFactory, PresaleConfig} from "src/PresaleFactory.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 import {MockRouterWithFactory, MockPairFactory, IERC20Lite, VanitySaltFinder} from "./TokenReservation.t.sol";
 
 /// @title 创建者代币购买（Creator Buy）测试
@@ -52,6 +53,7 @@ contract CreatorBuyTest is Test {
         PRESALE template = new PRESALE();
         presaleFactory = new PresaleFactory(address(template), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, router.WETH());
 
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
@@ -316,7 +318,11 @@ contract CreatorBuyTest is Test {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: address(0xfee1),
-            taxDuration: 7 days,
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

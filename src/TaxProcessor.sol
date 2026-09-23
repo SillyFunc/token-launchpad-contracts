@@ -3,8 +3,12 @@
 pragma solidity ^0.8.13;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
-import {IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
+import {IPancakePair, IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
+import {IFlapTaxTokenV3} from "src/lib/interfaces/IFlapTaxTokenV3.sol";
+import {IDividend} from "src/lib/dividend/IDividend.sol";
 import {
     ITaxProcessor,
     TaxProcessorInitParams,
@@ -12,56 +16,106 @@ import {
     PackedFeeConfigV2
 } from "src/lib/interfaces/ITaxProcessor.sol";
 
-// ---------------------------------------------------------------------------
-// 自定义错误
-// ---------------------------------------------------------------------------
+interface IWETH {
+    function deposit() external payable;
+    function withdraw(uint256 amount) external;
+}
 
 error AlreadyInitialized();
 error NotDeployer();
 error TaxTokenRequired();
 error RouterRequired();
 error FeeReceiverRequired();
+error MarketReceiverRequired();
+error DividendRequired();
+error UnsupportedDividendToken();
+error InvalidDistribution();
+error InvalidProtocolFee();
+error InvalidCommission();
 error NotTaxToken();
+error KeeperRegistryRequired();
+error UnauthorizedTaxKeeper();
+error InvalidTaxAmount();
+error UnsafeMinQuoteOut();
+error InvalidProcessingDeadline();
+error QuoteTokenUnavailable();
+error InsufficientQuoteOutput();
+error AccountingInvariant();
+error LiquidityUnavailable();
+error InvalidLiquidityBounds();
+error InvalidMainPool();
+error InsufficientLiquidityOutput();
+error InvalidBurnAmount();
 
-/// @notice Launchpad 极简 TaxProcessor：税代币 → swap 成 quote(WBNB) → unwrap 原生 BNB
-///         → 即时转给发币时固定的唯一收款人（feeReceiver）。
-/// @dev 单通道模型，清算即派发（无 dispatch 派发、无分账累计、无 keeper 依赖）：
-///      1. 收款人由 Coordinator 在发币时经 initialize 固定，运行期无任何变更入口
-///         （清算时动态传收款人=任何人可把税金打给自己，故恒为固定值）
-///      2. 失败路径落点唯一：swap 失败 → 税代币直转 feeReceiver；
-///         原生转账失败（收款人为拒收 BNB 的合约）→ 包回 WBNB 走 ERC20 转账，资金不锁死
-///      3. 方向信号（swap 输出 vs liqExpectedOutputAmount）原样回传，
-///         供代币 _adjustLiquidationThreshold 动态调节清算阈值
-///      4. 上游四通道（market/deflation/lp/dividend）、commission、Dividend 交互全部移除；
-///         ITaxProcessor（src/lib 受保护接口）签名不变，兼容视图以零值存根实现
-contract TaxProcessor is ITaxProcessor {
-    uint256 private constant DEADLINE_BUFFER = 300;
+/// @notice Asynchronous four-channel tax processor for FlapTaxTokenV3.
+/// @dev User transfers only enqueue tax. A role-gated keeper later performs bounded swaps,
+///      liquidity minting and quote-token burns. Fixed-recipient dispatch is permissionless.
+contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
+    bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+    uint16 private constant BPS = 10_000;
+    uint64 public constant MAX_DEADLINE_DELAY = 10 minutes;
+    address private constant DEAD = address(0xdead);
 
     address private immutable _deployer;
+    address private immutable _implementation;
     bool private _initialized;
 
-    address public immutable override swapRegistry; // address(0) — 本实现不使用 SwapRegistry
+    address public immutable override swapRegistry;
+    address public immutable keeperRegistry;
 
     address public override taxToken;
     address public override router;
     address public override feeReceiver;
-    address public quoteToken; // 存储值；isWeth 时 getQuoteToken 返回 WETH
+    address public override marketAddress;
+    address public override dividendAddress;
+    address public override commissionReceiver;
+    address public override converter;
+    address public override dividendToken;
+    address public quoteToken;
     uint256 public override liqExpectedOutputAmount;
 
-    /// @notice 累计已派发给收款人的 quote 数量（原生 BNB 与 WBNB 两种到账形态合计）
+    uint16 private _marketBps;
+    uint16 private _deflationBps;
+    uint16 private _lpBps;
+    uint16 private _dividendBps;
+    uint16 private _feeRate;
+    uint16 public override commissionBps;
+
+    uint256 public override feeQuoteBalance;
+    uint256 public override lpQuoteBalance;
+    uint256 public override marketQuoteBalance;
+    uint256 public override pendingDividendQuoteTokenBalance;
+    uint256 public override dividendTokenBalance;
+    uint256 public override commissionQuoteBalance;
+    uint256 public pendingDeflationQuoteBalance;
+    uint256 public lpTokenBalance;
+
+    uint256 public override totalDividendTokenSent;
+    uint256 public override totalQuoteAddedToLiquidity;
+    uint256 public override totalTokenAddedToLiquidity;
+    uint256 public override totalQuoteSentToMarketing;
     uint256 public totalQuoteSentToReceiver;
+    uint256 public totalTaxTokenBurned;
+    uint256 public totalQuoteBurned;
+    int8 public pendingDirection;
 
-    event Initialized(address indexed taxToken);
-    event TaxProcessed(uint256 taxAmount, uint256 quoteOut, int8 direction);
+    event Initialized(address indexed taxToken, address indexed dividendAddress);
+    event TaxQueued(uint256 taxAmount, uint256 pendingBalance);
+    event TaxProcessed(uint256 taxAmount, uint256 quoteOut, uint256 burned, uint256 lpReserved, int8 direction);
     event TaxForwarded(address indexed receiver, uint256 amount, bool isNative);
-    event FeeForwardedToReceiver(address indexed token, uint256 amount, address indexed receiver);
+    event DividendDeposited(address indexed dividend, uint256 amount);
+    event DividendDepositDeferred(address indexed dividend, uint256 amount);
+    event LiquidityAdded(uint256 tokenAmount, uint256 quoteAmount, uint256 liquidity);
+    event DeflationQuoteBurned(uint256 quoteAmount, uint256 taxTokenOut);
 
-    /// @dev WETH.withdraw 解包回款入口：仅兜收，不承载业务
     receive() external payable {}
 
-    constructor() {
+    constructor(address keeperRegistry_) {
+        if (keeperRegistry_ == address(0)) revert KeeperRegistryRequired();
         _deployer = msg.sender;
+        _implementation = address(this);
         swapRegistry = address(0);
+        keeperRegistry = keeperRegistry_;
     }
 
     modifier onlyTaxToken() {
@@ -69,142 +123,376 @@ contract TaxProcessor is ITaxProcessor {
         _;
     }
 
+    modifier onlyKeeper() {
+        if (!IAccessControl(keeperRegistry).hasRole(KEEPER_ROLE, msg.sender)) revert UnauthorizedTaxKeeper();
+        _;
+    }
+
     function initialize(TaxProcessorInitParams memory params) external override {
         if (_initialized) revert AlreadyInitialized();
-        if (msg.sender != _deployer) revert NotDeployer();
+        // Direct deployments remain deployer-initialized for tests and operational recovery.
+        // Minimal proxies are initialized atomically by TaxInfrastructureFactory.
+        if (address(this) == _implementation && msg.sender != _deployer) revert NotDeployer();
         if (params.taxToken == address(0)) revert TaxTokenRequired();
         if (params.router == address(0)) revert RouterRequired();
         if (params.feeReceiver == address(0)) revert FeeReceiverRequired();
+        if (uint256(params.marketBps) + params.deflationBps + params.lpBps + params.dividendBps != BPS) {
+            revert InvalidDistribution();
+        }
+        if (params.marketBps != 0 && params.marketAddress == address(0)) revert MarketReceiverRequired();
+        if (params.dividendBps != 0 && params.dividendAddress == address(0)) revert DividendRequired();
+        if (params.feeRate > BPS) revert InvalidProtocolFee();
+        if (params.commissionBps > BPS) revert InvalidCommission();
+        if (params.commissionBps != 0 && params.commissionReceiver == address(0)) revert InvalidCommission();
 
         _initialized = true;
-
         taxToken = params.taxToken;
         router = params.router;
         feeReceiver = params.feeReceiver;
+        marketAddress = params.marketAddress;
+        dividendAddress = params.dividendAddress;
+        commissionReceiver = params.commissionReceiver;
+        converter = params.converter;
         quoteToken = params.quoteToken;
         liqExpectedOutputAmount = params.liqExpectedOutputAmount;
 
-        // params 中 bps/dividend/commission/converter 为上游接口兼容位，本实现忽略
-        emit Initialized(params.taxToken);
+        _marketBps = params.marketBps;
+        _deflationBps = params.deflationBps;
+        _lpBps = params.lpBps;
+        _dividendBps = params.dividendBps;
+        _feeRate = params.feeRate;
+        commissionBps = params.commissionBps;
+
+        address resolvedQuote = getQuoteToken();
+        if (resolvedQuote == address(0)) revert QuoteTokenUnavailable();
+        address resolvedDividend = params.dividendToken == address(0) ? resolvedQuote : params.dividendToken;
+        if (resolvedDividend != resolvedQuote) revert UnsupportedDividendToken();
+        dividendToken = resolvedDividend;
+
+        emit Initialized(params.taxToken, params.dividendAddress);
     }
 
-    // ---------------------------------------------------------------------------
-    // 核心：处理税
-    // ---------------------------------------------------------------------------
-
-    /// @notice 拉取税代币 → swap 成 quote(WBNB) → unwrap 原生 BNB → 即时转给 feeReceiver
-    /// @return direction 方向信号语义与 FlapTaxTokenV3._adjustLiquidationThreshold 一致：
-    ///     > 0 → swap 输出低于参考（价格弱，提高阈值）
-    ///     < 0 → swap 输出高于参考（价格强，降低阈值）
-    ///     0   → 无参考值或相等
-    // 重入面：原生转账收款方为发币时固定地址，重入本合约受 onlyTaxToken 限制；
-    // 代币侧 notLiquidating=false 期间税收归零且不再触发清算，无重入套利路径
-    // slither-disable-next-line reentrancy-eth
-    function processTaxTokens(uint256 taxAmount) external override onlyTaxToken returns (int8) {
+    /// @notice Pull tax tokens from the token and return the previous keeper direction signal.
+    function processTaxTokens(uint256 taxAmount) external override onlyTaxToken returns (int8 direction) {
         if (taxAmount == 0) return 0;
+        direction = pendingDirection;
+        if (direction != 0) pendingDirection = 0;
 
+        uint256 beforeBalance = IERC20(taxToken).balanceOf(address(this));
         TransferHelper.safeTransferFrom(taxToken, msg.sender, address(this), taxAmount);
+        uint256 received = IERC20(taxToken).balanceOf(address(this)) - beforeBalance;
+        emit TaxQueued(received, pendingTaxTokens());
+    }
 
-        uint256 out = _swapToQuote(taxAmount);
-        if (out > 0) {
-            _forwardQuote(out);
+    /// @notice Split and process one queued DEX-tax batch. All price-sensitive work is keeper gated.
+    function processPendingTax(uint256 amountIn, uint256 minQuoteOut, uint64 deadline)
+        external
+        nonReentrant
+        onlyKeeper
+        returns (uint256 out)
+    {
+        if (amountIn == 0 || amountIn > pendingTaxTokens()) revert InvalidTaxAmount();
+        _checkDeadline(deadline);
+
+        (
+            uint256 feeTokens,
+            uint256 commissionTokens,
+            uint256 marketTokens,
+            uint256 burnTokens,
+            uint256 lpTokens,
+            uint256 dividendTokens
+        ) = _splitTax(amountIn);
+
+        uint256 lpReserve = lpTokens / 2;
+        uint256 lpSwap = lpTokens - lpReserve;
+        uint256 swapAmount = feeTokens + commissionTokens + marketTokens + lpSwap + dividendTokens;
+        if (burnTokens != 0) {
+            totalTaxTokenBurned += burnTokens;
+            TransferHelper.safeTransfer(taxToken, DEAD, burnTokens);
+        }
+        lpTokenBalance += lpReserve;
+
+        if (swapAmount != 0) {
+            if (minQuoteOut == 0) revert UnsafeMinQuoteOut();
+            out = _swap(taxToken, getQuoteToken(), swapAmount, minQuoteOut, deadline);
+            _creditSwapOutput(out, swapAmount, commissionTokens, marketTokens, lpSwap, dividendTokens);
+            _reconcileQuoteDonation();
         }
 
-        // 方向信号（弱化异常场景：swap 失败时 out==0，返回 +1 让其回升阈值→更少清算）
-        // slither-disable-next-line uninitialized-local 默认 0 是文档化语义（无参考值/相等 → 0），非未初始化误用
         int8 direction;
-        if (liqExpectedOutputAmount != 0) {
+        if (swapAmount != 0 && liqExpectedOutputAmount != 0) {
             if (out > liqExpectedOutputAmount) direction = -1;
             else if (out < liqExpectedOutputAmount) direction = 1;
         }
+        pendingDirection = direction;
 
-        emit TaxProcessed(taxAmount, out, direction);
-        return direction;
+        _dispatch();
+        emit TaxProcessed(amountIn, out, burnTokens, lpReserve, direction);
     }
 
-    /// @notice BondingCurve 阶段税（本项目不触发；保留接口兼容）：quote 直转收款人
-    function processBondingCurveTax(uint256 quoteAmount) external override onlyTaxToken {
+    /// @notice Account bonding-curve quote tax using the same configured channel ownership.
+    function processBondingCurveTax(uint256 quoteAmount) external override onlyTaxToken nonReentrant {
         if (quoteAmount == 0) return;
-        TransferHelper.safeTransferFrom(getQuoteToken(), msg.sender, address(this), quoteAmount);
-        _forwardQuote(quoteAmount);
+        address quote = getQuoteToken();
+        uint256 beforeBalance = IERC20(quote).balanceOf(address(this));
+        TransferHelper.safeTransferFrom(quote, msg.sender, address(this), quoteAmount);
+        uint256 received = IERC20(quote).balanceOf(address(this)) - beforeBalance;
+        _creditQuoteSplit(received);
+        _reconcileQuoteDonation();
+        _dispatch();
     }
 
-    /// @notice 接口兼容存根：本实现清算即派发，无累计余额可派发，恒为 no-op
-    function dispatch() external override {}
+    /// @notice Retry fixed-recipient transfers and dividend deposits without executing a trade.
+    function dispatch() external override nonReentrant {
+        _reconcileQuoteDonation();
+        _dispatch();
+    }
 
-    // ---------------------------------------------------------------------------
-    // 内部：swap 与派发
-    // ---------------------------------------------------------------------------
-
-    /// @notice 将税代币换成 quote token；失败时直接给 feeReceiver 兜底并记录事件
-    function _swapToQuote(uint256 amountIn) internal returns (uint256 out) {
-        address quote = getQuoteToken();
-        address weth_ = weth();
-        if (quote == address(0) || weth_ == address(0)) {
-            TransferHelper.safeTransfer(taxToken, feeReceiver, amountIn);
-            emit FeeForwardedToReceiver(taxToken, amountIn, feeReceiver);
-            return 0;
+    /// @notice Pair reserved LP tax tokens with already-accounted quote and burn minted LP.
+    /// @dev Token-side transfer is measured because FlapTaxTokenV3 taxes this sell into its pool.
+    function addPendingLiquidity(
+        uint256 tokenAmount,
+        uint256 minQuoteAmount,
+        uint256 maxQuoteAmount,
+        uint256 minLiquidity,
+        uint64 deadline
+    ) external nonReentrant onlyKeeper returns (uint256 quoteAmount, uint256 liquidity) {
+        _checkDeadline(deadline);
+        if (tokenAmount == 0 || tokenAmount > lpTokenBalance || lpQuoteBalance == 0) revert LiquidityUnavailable();
+        if (minQuoteAmount == 0 || minQuoteAmount > maxQuoteAmount || minLiquidity == 0) {
+            revert InvalidLiquidityBounds();
         }
 
+        (address pairAddress, uint256 tokenReserve, uint256 quoteReserve) = _poolReserves();
+        lpTokenBalance -= tokenAmount;
+        uint256 actualToken = _transferTokenToPair(pairAddress, tokenAmount);
+        quoteAmount = actualToken * quoteReserve / tokenReserve;
+        if (quoteAmount < minQuoteAmount || quoteAmount > maxQuoteAmount || quoteAmount > lpQuoteBalance) {
+            revert InvalidLiquidityBounds();
+        }
+
+        lpQuoteBalance -= quoteAmount;
+        totalTokenAddedToLiquidity += actualToken;
+        totalQuoteAddedToLiquidity += quoteAmount;
+        TransferHelper.safeTransfer(getQuoteToken(), pairAddress, quoteAmount);
+        liquidity = IPancakePair(pairAddress).mint(DEAD);
+        if (liquidity < minLiquidity) revert InsufficientLiquidityOutput();
+        emit LiquidityAdded(actualToken, quoteAmount, liquidity);
+    }
+
+    /// @notice Convert bonding-curve deflation quote into tax token and burn it.
+    function processPendingBurn(uint256 quoteAmount, uint256 minTaxTokenOut, uint64 deadline)
+        external
+        nonReentrant
+        onlyKeeper
+        returns (uint256 out)
+    {
+        if (quoteAmount == 0 || quoteAmount > pendingDeflationQuoteBalance) revert InvalidBurnAmount();
+        if (minTaxTokenOut == 0) revert UnsafeMinQuoteOut();
+        _checkDeadline(deadline);
+
+        pendingDeflationQuoteBalance -= quoteAmount;
+        out = _swap(getQuoteToken(), taxToken, quoteAmount, minTaxTokenOut, deadline);
+        totalQuoteBurned += quoteAmount;
+        totalTaxTokenBurned += out;
+        TransferHelper.safeTransfer(taxToken, DEAD, out);
+        emit DeflationQuoteBurned(quoteAmount, out);
+    }
+
+    function _splitTax(uint256 amount)
+        internal
+        view
+        returns (
+            uint256 feeTokens,
+            uint256 commissionTokens,
+            uint256 marketTokens,
+            uint256 burnTokens,
+            uint256 lpTokens,
+            uint256 dividendTokens
+        )
+    {
+        feeTokens = amount * _feeRate / BPS;
+        uint256 afterFee = amount - feeTokens;
+        commissionTokens = afterFee * commissionBps / BPS;
+        uint256 distributable = afterFee - commissionTokens;
+        marketTokens = distributable * _marketBps / BPS;
+        burnTokens = distributable * _deflationBps / BPS;
+        lpTokens = distributable * _lpBps / BPS;
+        dividendTokens = distributable * _dividendBps / BPS;
+        // Channel floors may leave at most a few wei. Assign that dust to the always-valid
+        // protocol receiver instead of accidentally activating a configured-zero channel.
+        feeTokens += distributable - marketTokens - burnTokens - lpTokens - dividendTokens;
+    }
+
+    function _creditSwapOutput(
+        uint256 out,
+        uint256 denominator,
+        uint256 commissionTokens,
+        uint256 marketTokens,
+        uint256 lpSwap,
+        uint256 dividendTokens
+    ) internal {
+        uint256 commissionOut = out * commissionTokens / denominator;
+        uint256 marketOut = out * marketTokens / denominator;
+        uint256 lpOut = out * lpSwap / denominator;
+        uint256 dividendOut = out * dividendTokens / denominator;
+        uint256 feeOut = out - commissionOut - marketOut - lpOut - dividendOut;
+        // feeTokens may be zero; assigning integer dust to the protocol fee keeps every wei owned.
+        feeQuoteBalance += feeOut;
+        commissionQuoteBalance += commissionOut;
+        marketQuoteBalance += marketOut;
+        lpQuoteBalance += lpOut;
+        pendingDividendQuoteTokenBalance += dividendOut;
+    }
+
+    function _creditQuoteSplit(uint256 amount) internal {
+        (
+            uint256 feeAmount,
+            uint256 commissionAmount,
+            uint256 marketAmount,
+            uint256 deflationAmount,
+            uint256 lpAmount,
+            uint256 dividendAmount
+        ) = _splitTax(amount);
+        feeQuoteBalance += feeAmount;
+        commissionQuoteBalance += commissionAmount;
+        marketQuoteBalance += marketAmount;
+        pendingDeflationQuoteBalance += deflationAmount;
+        lpQuoteBalance += lpAmount;
+        pendingDividendQuoteTokenBalance += dividendAmount;
+    }
+
+    function _dispatch() internal {
+        uint256 feeAmount = feeQuoteBalance;
+        uint256 commissionAmount = commissionQuoteBalance;
+        uint256 marketAmount = marketQuoteBalance;
+        uint256 dividendAmount = pendingDividendQuoteTokenBalance;
+        feeQuoteBalance = 0;
+        commissionQuoteBalance = 0;
+        marketQuoteBalance = 0;
+        pendingDividendQuoteTokenBalance = 0;
+
+        if (feeAmount != 0) _forwardQuote(feeReceiver, feeAmount);
+        if (commissionAmount != 0) _forwardQuote(commissionReceiver, commissionAmount);
+        if (marketAmount != 0) {
+            totalQuoteSentToMarketing += marketAmount;
+            _forwardQuote(marketAddress, marketAmount);
+        }
+        if (dividendAmount != 0) _depositDividend(dividendAmount);
+    }
+
+    function _depositDividend(uint256 amount) internal {
+        address quote = getQuoteToken();
+        uint256 beforeBalance = IERC20(quote).balanceOf(address(this));
+        TransferHelper.safeApprove(quote, dividendAddress, 0);
+        TransferHelper.safeApprove(quote, dividendAddress, amount);
+        (bool called, bytes memory data) = dividendAddress.call(abi.encodeCall(IDividend.deposit, (amount)));
+        TransferHelper.safeApprove(quote, dividendAddress, 0);
+        uint256 afterBalance = IERC20(quote).balanceOf(address(this));
+        uint256 consumed = beforeBalance > afterBalance ? beforeBalance - afterBalance : 0;
+        if (consumed > amount) revert AccountingInvariant();
+        if (consumed != 0) {
+            totalDividendTokenSent += consumed;
+            emit DividendDeposited(dividendAddress, consumed);
+        }
+        uint256 unconsumed = amount - consumed;
+        if (unconsumed != 0) {
+            pendingDividendQuoteTokenBalance += unconsumed;
+            emit DividendDepositDeferred(dividendAddress, unconsumed);
+        }
+        // A false/malformed result is tolerated only because balance delta is authoritative.
+        called;
+        data;
+    }
+
+    function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, uint64 deadline)
+        internal
+        returns (uint256 out)
+    {
+        if (tokenIn == address(0) || tokenOut == address(0)) revert QuoteTokenUnavailable();
+        address weth_ = weth();
         address[] memory path;
-        if (quote == weth_) {
+        if (tokenIn == weth_ || tokenOut == weth_) {
             path = new address[](2);
-            path[0] = taxToken;
-            path[1] = weth_;
+            path[0] = tokenIn;
+            path[1] = tokenOut;
         } else {
             path = new address[](3);
-            path[0] = taxToken;
-            path[1] = weth_; // 经 WETH 中转（需 weth/quote 池存在）
-            path[2] = quote;
+            path[0] = tokenIn;
+            path[1] = weth_;
+            path[2] = tokenOut;
         }
 
-        uint256 before = IERC20(quote).balanceOf(address(this));
-        TransferHelper.safeApprove(taxToken, router, amountIn);
-
-        try IPancakeRouter02(router)
-            .swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                amountIn, 0, path, address(this), block.timestamp + DEADLINE_BUFFER
-            ) {}
-        catch {
-            TransferHelper.safeTransfer(taxToken, feeReceiver, amountIn); // 兑换失败兜底，不锁定资金
-            emit FeeForwardedToReceiver(taxToken, amountIn, feeReceiver);
-            return 0;
-        }
-
-        out = IERC20(quote).balanceOf(address(this)) - before;
+        uint256 beforeBalance = IERC20(tokenOut).balanceOf(address(this));
+        TransferHelper.safeApprove(tokenIn, router, 0);
+        TransferHelper.safeApprove(tokenIn, router, amountIn);
+        IPancakeRouter02(router)
+            .swapExactTokensForTokensSupportingFeeOnTransferTokens(amountIn, minOut, path, address(this), deadline);
+        TransferHelper.safeApprove(tokenIn, router, 0);
+        out = IERC20(tokenOut).balanceOf(address(this)) - beforeBalance;
+        if (out < minOut) revert InsufficientQuoteOutput();
     }
 
-    /// @notice 派发 quote 给 feeReceiver：WETH 先解包原生 BNB 转账；
-    ///         收款方拒收原生币（无 receive 的合约）时包回 WBNB 走 ERC20 转账
-    /// @dev CEI：totalQuoteSentToReceiver 先记账再外呼。原生转账收款方为发币时固定的 feeReceiver
-    ///      （唯一赋值链：CoordinatorFactory.initialize ← 表单 feeRecipient，双重非零校验，无 setter），
-    ///      非任意目的地 —— 压制 arbitrary-send-eth 误报
-    // slither-disable-next-line arbitrary-send-eth
-    function _forwardQuote(uint256 amount) internal {
+    function _forwardQuote(address receiver, uint256 amount) internal {
         totalQuoteSentToReceiver += amount;
-
         address quote = getQuoteToken();
         if (quote != weth()) {
-            TransferHelper.safeTransfer(quote, feeReceiver, amount);
-            emit TaxForwarded(feeReceiver, amount, false);
+            TransferHelper.safeTransfer(quote, receiver, amount);
+            emit TaxForwarded(receiver, amount, false);
             return;
         }
 
-        IWETH(quote).withdraw(amount); // 解包：原生 BNB 回到本合约（receive 兜收）
-        (bool ok,) = feeReceiver.call{value: amount}("");
+        IWETH(quote).withdraw(amount);
+        (bool ok,) = receiver.call{value: amount}("");
         if (ok) {
-            emit TaxForwarded(feeReceiver, amount, true);
+            emit TaxForwarded(receiver, amount, true);
             return;
         }
-        // 原生转账失败不吞资金：包回 WBNB 走 ERC20 转账
         IWETH(quote).deposit{value: amount}();
-        TransferHelper.safeTransfer(quote, feeReceiver, amount);
-        emit TaxForwarded(feeReceiver, amount, false);
+        TransferHelper.safeTransfer(quote, receiver, amount);
+        emit TaxForwarded(receiver, amount, false);
     }
 
-    // ---------------------------------------------------------------------------
-    // Views
-    // ---------------------------------------------------------------------------
+    function _poolReserves() internal view returns (address pairAddress, uint256 tokenReserve, uint256 quoteReserve) {
+        pairAddress = IFlapTaxTokenV3(taxToken).mainPool();
+        IPancakePair pair = IPancakePair(pairAddress);
+        address token0 = pair.token0();
+        address token1 = pair.token1();
+        address quote = getQuoteToken();
+        if (!((token0 == taxToken && token1 == quote) || (token1 == taxToken && token0 == quote))) {
+            revert InvalidMainPool();
+        }
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        tokenReserve = token0 == taxToken ? reserve0 : reserve1;
+        quoteReserve = token0 == taxToken ? reserve1 : reserve0;
+        if (tokenReserve == 0 || quoteReserve == 0) revert LiquidityUnavailable();
+    }
+
+    function _transferTokenToPair(address pairAddress, uint256 amount) internal returns (uint256 received) {
+        uint256 beforeBalance = IERC20(taxToken).balanceOf(pairAddress);
+        TransferHelper.safeTransfer(taxToken, pairAddress, amount);
+        received = IERC20(taxToken).balanceOf(pairAddress) - beforeBalance;
+    }
+
+    function _reconcileQuoteDonation() internal {
+        uint256 accounted = feeQuoteBalance + commissionQuoteBalance + marketQuoteBalance + lpQuoteBalance
+            + pendingDividendQuoteTokenBalance + pendingDeflationQuoteBalance + dividendTokenBalance;
+        uint256 actual = IERC20(getQuoteToken()).balanceOf(address(this));
+        if (actual < accounted) revert AccountingInvariant();
+        feeQuoteBalance += actual - accounted;
+    }
+
+    function _checkDeadline(uint64 deadline) internal view {
+        if (deadline < block.timestamp || deadline > block.timestamp + MAX_DEADLINE_DELAY) {
+            revert InvalidProcessingDeadline();
+        }
+    }
+
+    function pendingTaxTokens() public view returns (uint256) {
+        uint256 balance = IERC20(taxToken).balanceOf(address(this));
+        if (balance < lpTokenBalance) revert AccountingInvariant();
+        return balance - lpTokenBalance;
+    }
 
     function isWeth() public view returns (bool) {
         return quoteToken == address(0) || quoteToken == weth();
@@ -219,107 +507,42 @@ contract TaxProcessor is ITaxProcessor {
     }
 
     function flapBlackHole() external pure override returns (address) {
-        return address(0xdead);
+        return DEAD;
     }
 
-    // ── 上游四通道兼容存根：本实现单通道，恒零值 ──
-
-    function marketAddress() external pure override returns (address) {
-        return address(0);
+    function dividendQuoteBalance() external view override returns (uint256) {
+        return pendingDividendQuoteTokenBalance;
     }
 
-    function dividendAddress() external pure override returns (address) {
-        return address(0);
+    function totalQuoteSentToDividend() external view override returns (uint256) {
+        return totalDividendTokenSent;
     }
 
-    function commissionReceiver() external pure override returns (address) {
-        return address(0);
-    }
-
-    function converter() external pure override returns (address) {
-        return address(0);
-    }
-
-    function dividendToken() external pure override returns (address) {
-        return address(0);
-    }
-
-    function commissionBps() external pure override returns (uint16) {
-        return 0;
-    }
-
-    function feeQuoteBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function lpQuoteBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function marketQuoteBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function pendingDividendQuoteTokenBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function dividendQuoteBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function dividendTokenBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function commissionQuoteBalance() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function totalDividendTokenSent() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function totalQuoteSentToDividend() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function totalQuoteAddedToLiquidity() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function totalTokenAddedToLiquidity() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function totalQuoteSentToMarketing() external pure override returns (uint256) {
-        return 0;
-    }
-
-    function requiresMEVProtection() external view override returns (bool) {
-        return false;
+    function requiresMEVProtection() external pure override returns (bool) {
+        return true;
     }
 
     function feeConfig() external view override returns (PackedFeeConfig memory) {
-        return PackedFeeConfig({marketBps: 0, deflationBps: 0, lpBps: 0, dividendBps: 0, feeRate: 0, isWeth: isWeth()});
+        return PackedFeeConfig({
+            marketBps: _marketBps,
+            deflationBps: _deflationBps,
+            lpBps: _lpBps,
+            dividendBps: _dividendBps,
+            feeRate: _feeRate,
+            isWeth: isWeth()
+        });
     }
 
     function feeConfigV2() external view override returns (PackedFeeConfigV2 memory) {
         return PackedFeeConfigV2({
-            marketBps: 0,
-            deflationBps: 0,
-            lpBps: 0,
-            dividendBps: 0,
-            feeRate: 0,
+            marketBps: _marketBps,
+            deflationBps: _deflationBps,
+            lpBps: _lpBps,
+            dividendBps: _dividendBps,
+            feeRate: _feeRate,
             isWeth: isWeth(),
-            commissionBps: 0,
-            dividendToken: address(0)
+            commissionBps: commissionBps,
+            dividendToken: dividendToken
         });
     }
 }
-
-    /// @notice 最小 WETH 接口（解包/包装原生 BNB）
-    interface IWETH {
-        function deposit() external payable;
-        function withdraw(uint256 amount) external;
-    }

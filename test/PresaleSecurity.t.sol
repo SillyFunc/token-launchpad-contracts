@@ -16,6 +16,7 @@ import {
     PresaleEnabled
 } from "src/Presale.sol";
 import {FlapTaxTokenV3} from "src/lib/token/FlapTaxTokenV3.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 import {PresaleFactory} from "src/PresaleFactory.sol";
 import {MockRouterWithFactory, MockPairFactory, IERC20Lite, VanitySaltFinder} from "./TokenReservation.t.sol";
 
@@ -47,6 +48,7 @@ contract PresaleSecurityTest is Test {
         tokenFactory = new TokenFactory(address(flapImpl), address(router), address(0));
         PresaleFactory presaleFactory = new PresaleFactory(address(new PRESALE()), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, router.WETH());
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));
 
@@ -228,7 +230,11 @@ contract PresaleSecurityTest is Test {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: address(0xfee1),
-            taxDuration: 7 days,
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });

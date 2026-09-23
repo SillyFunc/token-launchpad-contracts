@@ -9,6 +9,7 @@ import {PRESALE} from "src/Presale.sol";
 import {PresaleFactory} from "src/PresaleFactory.sol";
 import {FlapTaxTokenV3} from "src/lib/token/FlapTaxTokenV3.sol";
 import {MockRouterWithFactory, MockPairFactory, IERC20Lite, VanitySaltFinder} from "./TokenReservation.t.sol";
+import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 
 uint256 constant SUPPLY = 1e9 ether; // FlapTaxTokenV3 固定总量
 uint256 constant MAX_TOKENS = 8; // 封顶防 invariant 校验循环膨胀
@@ -287,7 +288,11 @@ contract Handler {
             buyTax: 300,
             sellTax: 500,
             feeRecipient: address(0xfee1),
-            taxDuration: 7 days,
+            marketBps: 10_000,
+            deflationBps: 0,
+            lpBps: 0,
+            dividendBps: 0,
+            minimumShareBalance: 0,
             antiFarmerDuration: 1 days,
             liqExpectedOutputAmount: 0
         });
@@ -307,6 +312,7 @@ contract LaunchpadInvariants is Test {
         PRESALE presaleTemplate = new PRESALE();
         PresaleFactory presaleFactory = new PresaleFactory(address(presaleTemplate), address(0));
         coordinator = new CoordinatorFactory(address(tokenFactory), address(presaleFactory), address(router));
+        TaxInfrastructureFixture.configure(coordinator, router.WETH());
 
         tokenFactory.grantRole(tokenFactory.COORDINATOR_ROLE(), address(coordinator));
         presaleFactory.grantRole(presaleFactory.COORDINATOR_ROLE(), address(coordinator));

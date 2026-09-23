@@ -1,0 +1,7 @@
+# Copy this file to .dev.vars for local testing. Never commit .dev.vars.
+READ_RPC_URL=https://bsc-testnet-dataseed.bnbchain.org
+SEND_RPC_URL=https://bsc-testnet-dataseed.bnbchain.org
+COORDINATOR_ADDRESS=0x9a7594114f4b79544f7CA00FBd1E902C556BbC47
+KEEPER_ADDRESS=0x9f87b1973361b23387D7F1b536484543a5ea1eFB
+KEEPER_PRIVATE_KEY=0xDO_NOT_PUT_A_REAL_KEY_IN_THIS_EXAMPLE
+ADMIN_TOKEN=replace-with-a-long-random-value

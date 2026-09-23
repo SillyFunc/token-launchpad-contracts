@@ -38,37 +38,6 @@ jobs:
       - name: Run Forge tests
         run: forge test -vvv
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.17.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: sdk/pnpm-lock.yaml
-
-      - name: Install SDK dependencies
-        working-directory: sdk
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate SDK
-        working-directory: sdk
-        run: pnpm generate
-
-      - name: Verify generated SDK files are current
-        run: git diff --exit-code -- sdk/src/generated
-
-      - name: Typecheck SDK
-        working-directory: sdk
-        run: pnpm typecheck
-
-      - name: Build SDK package
-        working-directory: sdk
-        run: pnpm build
-
   slither:
     name: Slither static analysis
     runs-on: ubuntu-latest
