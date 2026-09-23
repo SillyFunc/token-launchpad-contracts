@@ -13,6 +13,8 @@ import {TaxProcessor} from "src/TaxProcessor.sol";
 import {IFlapTaxTokenV3} from "src/lib/interfaces/IFlapTaxTokenV3.sol";
 import {ITaxProcessor, TaxProcessorInitParams} from "src/lib/interfaces/ITaxProcessor.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
+import {BuybackVaultFactory} from "src/BuybackVaultFactory.sol";
+import {BuybackConfig} from "src/BuybackVault.sol";
 
 // ---------------------------------------------------------------------------
 // 自定义错误
@@ -41,6 +43,8 @@ error NotReserver();
 error CreatorBuyTokensWithoutFunding();
 error InvalidAllocation();
 error InvalidVanitySuffix();
+error BuybackVaultFactoryNotSet();
+error ZeroBuybackVaultFactory();
 
 // ============================================================================
 // CoordinatorFactory - 一站式发币编排（代币 + Pair + TaxProcessor + 托管仓）
@@ -73,6 +77,10 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     mapping(address => address) public tokenPresales;
     mapping(address => address) public presaleTokens;
     mapping(address => address) public tokenCreators;
+    /// @notice 代币 → 回购金库（未启用金库则为 0）
+    mapping(address => address) public tokenVaults;
+    /// @notice 回购金库工厂。一次性 admin 配置，不改构造函数以免全量测试签名爆炸。
+    address public buybackVaultFactory;
     /// @notice 代币 → 预售条款是否已配置：每仓仅允许一次 setupPresale（开售后底层条款冻结）
     mapping(address => bool) public tokenConfigured;
     mapping(address => address[]) public creatorTokens;
@@ -104,6 +112,8 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     event FeesWithdrawn(uint256 amount, address indexed to);
     event TokenAddressReserved(address indexed token, address indexed reserver, uint256 fee);
     event ExcessRefunded(address indexed to, uint256 amount);
+    event BuybackVaultFactorySet(address indexed factory);
+    event BuybackVaultAttached(address indexed token, address indexed vault, uint8 mode, uint8 trigger);
 
     constructor(address _tokenFactory, address _presaleFactory, address _router) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -134,30 +144,59 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         nonReentrant
         returns (address token, address presale)
     {
+        _assertCanCreate(tokenConfig, salt);
+        (token, presale) = _createTokenBody(tokenConfig, salt);
+        _refundExcess();
+    }
+
+    /// @notice 发币并启用自动回购金库。税金打入金库而非 `tokenConfig.feeRecipient`（该字段被覆盖为金库地址）。
+    function createTokenWithVault(TokenConfig memory tokenConfig, bytes32 salt, BuybackConfig calldata buyback)
+        external
+        payable
+        nonReentrant
+        returns (address token, address presale, address vault)
+    {
+        if (buybackVaultFactory == address(0)) revert BuybackVaultFactoryNotSet();
+        _assertCanCreate(tokenConfig, salt);
+
+        vault = BuybackVaultFactory(buybackVaultFactory).createVault();
+        tokenConfig.feeRecipient = vault;
+
+        (token, presale) = _createTokenBody(tokenConfig, salt);
+
+        BuybackVaultFactory(buybackVaultFactory)
+            .initializeVault(vault, token, IFlapTaxTokenV3(token).mainPool(), routerAddress, _wbnb(), buyback);
+
+        tokenVaults[token] = vault;
+        emit BuybackVaultAttached(token, vault, uint8(buyback.mode), uint8(buyback.trigger));
+        _refundExcess();
+    }
+
+    function _assertCanCreate(TokenConfig memory tokenConfig, bytes32 salt) internal view {
         if (!factoryEnabled) revert FactoryDisabled();
         if (msg.value < creationFee) revert InsufficientCreationFee();
         if (bytes(tokenConfig.name).length == 0) revert EmptyTokenName();
         if (bytes(tokenConfig.symbol).length == 0) revert EmptyTokenSymbol();
-
-        // 步骤1: TokenFactory 部署克隆 + Pair + TaxProcessor
-        //       8888-only 双闸门：盐必显式（随机通道已废除，杜绝非 8888 地址）+ 预言地址尾号校验；
-        //       预留权属照旧（他人预留的盐拒绝兑现，本人/未预留放行 —— 未预留即免费通道）
         if (salt == bytes32(0)) revert InvalidSalt();
         address predicted = tokenFactory.predictTokenAddress(salt);
         if (uint160(predicted) & 0xFFFF != VANITY_SUFFIX) revert InvalidVanitySuffix();
         address reserver = tokenAddressReserver[predicted];
         if (reserver != address(0) && reserver != msg.sender) revert NotReserver();
+    }
+
+    /// @dev 克隆代币 + Pair + TaxProcessor + 托管仓。调用方已完成盐/费用校验。
+    function _createTokenBody(TokenConfig memory tokenConfig, bytes32 salt)
+        internal
+        returns (address token, address presale)
+    {
         TokenFactory.TokenBundle memory bundle = tokenFactory.createToken(tokenConfig, salt, msg.sender);
         token = bundle.token;
         if (token == address(0)) revert TokenCreationFailed();
 
-        // 步骤2: 部署 TaxProcessor（部署者=本合约，保证 initialize 权限）
         address taxProcessor = address(new TaxProcessor());
 
-        // 步骤3: 初始化 V3 代币（msg.sender=本合约 → 全量代币铸给本合约）
         IFlapTaxTokenV3(token).initialize(_buildInitParams(tokenConfig, bundle, taxProcessor));
 
-        // 步骤4: 初始化 TaxProcessor（单通道：税 swap 成 BNB 即时转 feeRecipient，bps 全 0）
         ITaxProcessor(taxProcessor)
             .initialize(
                 TaxProcessorInitParams({
@@ -180,23 +219,18 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
             })
             );
 
-        // 步骤5: 创建托管仓（PRESALE 克隆，未配置预售）
         presale = presaleFactory.createPresale(routerAddress, msg.sender);
         PRESALE(payable(presale)).setCoinAndPair(token, bundle.pair);
 
-        // 步骤5: 全量代币转入托管仓
         uint256 supply = IERC20(token).balanceOf(address(this));
         if (supply == 0) revert NoSupply();
         bool transferOk = IERC20(token).transfer(presale, supply);
         if (!transferOk) revert TokenTransferFailed();
 
-        // 步骤6: 授权协调器为配置方（供 setupPresale 配置）；token 所有权交托管仓
-        //       （claimAllTokens/launch 的迁移编排前提），托管仓所有权交付创建者
         ITokenMigration(token).transferOwnership(presale);
         PRESALE(payable(presale)).transferOwnership(msg.sender);
         emit OwnershipTransferred(token, presale, msg.sender);
 
-        // 步骤7: 状态注册
         tokenPresales[token] = presale;
         presaleTokens[presale] = token;
         tokenCreators[token] = msg.sender;
@@ -216,15 +250,14 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         });
 
         emit TokenPresalePairCreated(token, presale, msg.sender, supply);
+    }
 
-        // 步骤8: 退还多付的创建费（退款失败整笔回滚，绝不吞用户资金）
+    function _refundExcess() internal {
         if (msg.value > creationFee) {
             uint256 refund = msg.value - creationFee;
             TransferHelper.safeTransferETH(msg.sender, refund);
             emit ExcessRefunded(msg.sender, refund);
         }
-
-        return (token, presale);
     }
 
     /// @dev 为已创建代币开启预售：分配比例由管理员 setAllocation 配置（默认 30% 创建者 / 20% 底池 / 50% 预售），
@@ -344,6 +377,13 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     // ---------------------------------------------------------------------------
     // 管理
     // ---------------------------------------------------------------------------
+
+    function setBuybackVaultFactory(address factory) external onlyAdmin {
+        if (buybackVaultFactory != address(0)) revert AlreadyConfigured();
+        if (factory == address(0)) revert ZeroBuybackVaultFactory();
+        buybackVaultFactory = factory;
+        emit BuybackVaultFactorySet(factory);
+    }
 
     function setFactoryEnabled(bool _enabled) external onlyAdmin {
         factoryEnabled = _enabled;
