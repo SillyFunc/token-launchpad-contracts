@@ -23,6 +23,7 @@ import {Dividend} from "src/lib/dividend/Dividend.sol";
 import {TaxInfrastructureFixture} from "./helpers/TaxInfrastructureFixture.sol";
 import {PresaleFactory, PresaleConfig} from "src/PresaleFactory.sol";
 import {VanitySaltFinder} from "./TokenReservation.t.sol";
+import {MockWBNB} from "./TaxProcessor.t.sol";
 
 contract MockPairFactory {
     address public pair;
@@ -75,6 +76,7 @@ contract CoordinatorTest is Test {
     event PresaleFailed(uint256 raisedBNB, uint256 softCap);
 
     FlapTaxTokenV3 flapImpl;
+    MockWBNB wbnb;
     MockRouterWithFactory router;
     MockPairFactory pairFactory;
     TokenFactory tokenFactory;
@@ -88,7 +90,8 @@ contract CoordinatorTest is Test {
         flapImpl = new FlapTaxTokenV3(5e6 ether, 1e7 ether);
         pairFactory = new MockPairFactory();
         pairFactory.pair();
-        router = new MockRouterWithFactory(address(0xAABB), pairFactory);
+        wbnb = new MockWBNB();
+        router = new MockRouterWithFactory(address(wbnb), pairFactory);
 
         tokenFactory = new TokenFactory(address(flapImpl), address(router), address(0));
         PRESALE template = new PRESALE();
@@ -309,7 +312,7 @@ contract CoordinatorTest is Test {
         assertEq(TaxProcessor(payable(processor)).feeReceiver(), feeReceiver);
         assertEq(TaxProcessor(payable(processor)).taxToken(), token);
         assertEq(TaxProcessor(payable(processor)).router(), address(router));
-        assertEq(TaxProcessor(payable(processor)).getQuoteToken(), address(0xAABB)); // WBNB
+        assertEq(TaxProcessor(payable(processor)).getQuoteToken(), address(wbnb));
 
         // 默认夹具使用 100% 市场通道，不创建 Dividend。
         assertEq(TaxProcessor(payable(processor)).dividendAddress(), address(0));
@@ -348,21 +351,75 @@ contract CoordinatorTest is Test {
         assertEq(IDividend(dividend).minimumShareBalance(), 10_000 ether);
         assertTrue(IDividend(dividend).excludedFromDividends(processor));
         assertTrue(IDividend(dividend).excludedFromDividends(FlapTaxTokenV3(token).mainPool()));
+        assertTrue(IDividend(dividend).excludedFromDividends(presale));
         assertEq(Dividend(payable(dividend)).owner(), coordinator.taxInfrastructureFactory());
 
-        // Token transfer hooks register the escrow's live balance immediately. The temporary
+        // The escrow owns the tokens but must never earn their dividends. The temporary
         // Coordinator share created by minting is settled back to zero in the same transaction.
         (uint256 presaleShare,,) = IDividend(dividend).userInfo(presale);
         (uint256 coordinatorShare,,) = IDividend(dividend).userInfo(address(coordinator));
-        assertEq(presaleShare, SUPPLY);
+        assertEq(presaleShare, 0);
         assertEq(coordinatorShare, 0);
-        assertEq(IDividend(dividend).totalShares(), SUPPLY);
+        assertEq(IDividend(dividend).totalShares(), 0);
+        assertEq(IDividend(dividend).withdrawableDividends(presale), 0);
 
         PackedFeeConfig memory cfg = TaxProcessor(payable(processor)).feeConfig();
         assertEq(cfg.marketBps, 4_000);
         assertEq(cfg.deflationBps, 1_000);
         assertEq(cfg.lpBps, 2_000);
         assertEq(cfg.dividendBps, 3_000);
+    }
+
+    function test_PresaleEscrowCannotReceiveVestingPeriodDividends() public {
+        TokenConfig memory config = _tokenConfig();
+        config.marketBps = 4_000;
+        config.deflationBps = 1_000;
+        config.lpBps = 2_000;
+        config.dividendBps = 3_000;
+        config.minimumShareBalance = 10_000 ether;
+
+        bytes32 salt = _vanitySalt("escrow-dividend");
+        vm.prank(creator);
+        (address token, address presale) = coordinator.createToken{value: 1 ether}(config, salt);
+        IDividend dividend = IDividend(coordinator.tokenDividends(token));
+
+        vm.deal(address(this), 1 ether);
+        wbnb.deposit{value: 1 ether}();
+        wbnb.approve(address(dividend), 1 ether);
+        assertFalse(dividend.deposit(1 ether)); // No circulating shareholder yet; WBNB stays with depositor.
+        assertEq(wbnb.balanceOf(address(dividend)), 0);
+
+        PresaleConfig memory presaleConfig = _presaleConfig();
+        presaleConfig.presaleTokenPrice = 1e10; // 1 BNB buys 100 million tokens.
+        vm.prank(creator);
+        coordinator.setupPresale(token, presaleConfig);
+        vm.prank(creator);
+        PRESALE(payable(presale)).openPresale();
+
+        address buyer = address(0x1234);
+        vm.deal(buyer, 1 ether);
+        vm.prank(buyer);
+        PRESALE(payable(presale)).subscribe{value: 1 ether}();
+        vm.prank(creator);
+        PRESALE(payable(presale)).endPresale();
+        vm.prank(creator);
+        PRESALE(payable(presale)).launch();
+        vm.warp(block.timestamp + 5 minutes + 1);
+        vm.prank(buyer);
+        PRESALE(payable(presale)).claim();
+
+        assertGt(IERC20Lite(token).balanceOf(presale), 0); // Most tokens are still vesting in escrow.
+        assertEq(dividend.withdrawableDividends(presale), 0);
+        assertEq(dividend.totalShares(), IERC20Lite(token).balanceOf(buyer));
+
+        assertTrue(dividend.deposit(1 ether));
+        assertEq(dividend.withdrawableDividends(presale), 0);
+        uint256 buyerDividend = dividend.withdrawableDividends(buyer);
+        assertApproxEqAbs(buyerDividend, 1 ether, 1); // Dividend's per-share rounding may leave 1 wei.
+        assertFalse(dividend.withdrawDividendsFor(presale));
+        assertEq(wbnb.balanceOf(presale), 0);
+        assertTrue(dividend.withdrawDividendsFor(buyer));
+        assertEq(buyer.balance, buyerDividend);
     }
 
     function test_RevertWhen_TaxDistributionDoesNotSumToBps() public {

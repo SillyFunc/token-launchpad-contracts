@@ -228,9 +228,10 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         token = bundle.token;
         if (token == address(0)) revert TokenCreationFailed();
 
+        presale = presaleFactory.createPresale(routerAddress, msg.sender);
         (address taxProcessor, address dividend) = TaxInfrastructureFactory(taxInfrastructureFactory)
             .createInfrastructure(
-                _buildTaxProcessorParams(tokenConfig, token), bundle.pair, tokenConfig.minimumShareBalance
+                _buildTaxProcessorParams(tokenConfig, token), bundle.pair, presale, tokenConfig.minimumShareBalance
             );
 
         IFlapTaxTokenV3(token).initialize(_buildInitParams(tokenConfig, bundle, taxProcessor, dividend));
@@ -238,7 +239,6 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         tokenDividends[token] = dividend;
         emit TaxInfrastructureAttached(token, taxProcessor, dividend);
 
-        presale = presaleFactory.createPresale(routerAddress, msg.sender);
         PRESALE(payable(presale)).setCoinAndPair(token, bundle.pair);
 
         uint256 supply = IERC20(token).balanceOf(address(this));

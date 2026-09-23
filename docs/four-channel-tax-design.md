@@ -107,7 +107,7 @@ buyback-and-burn; it is never silently reassigned.
 4. No LP token is minted to the processor, creator, keeper or administrator;
    all newly minted LP is sent to the dead address.
 5. A failed external operation cannot change a channel's economic ownership.
-6. The tax processor and pool never receive dividend shares.
+6. The tax processor, pool, and presale escrow never receive dividend shares. Tokens held in escrow become eligible only after a holder claims them.
 
 ## Known semantic constraint
 

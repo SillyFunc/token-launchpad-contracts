@@ -45,11 +45,12 @@ contract TaxInfrastructureFactory is AccessControl {
         keeperRegistry = coordinator;
     }
 
-    function createInfrastructure(TaxProcessorInitParams calldata input, address pair, uint256 minimumShareBalance)
-        external
-        onlyRole(COORDINATOR_ROLE)
-        returns (address processor, address dividend)
-    {
+    function createInfrastructure(
+        TaxProcessorInitParams calldata input,
+        address pair,
+        address presale,
+        uint256 minimumShareBalance
+    ) external onlyRole(COORDINATOR_ROLE) returns (address processor, address dividend) {
         if (input.dividendAddress != address(0)) revert UnexpectedDividendAddress();
 
         TaxProcessorInitParams memory params = input;
@@ -63,6 +64,7 @@ contract TaxInfrastructureFactory is AccessControl {
             IDividend(dividend).initialize(params.dividendToken, params.taxToken, minimumShareBalance);
             IDividend(dividend).excludeAddress(pair);
             IDividend(dividend).excludeAddress(processor);
+            IDividend(dividend).excludeAddress(presale);
         }
 
         TaxProcessor(payable(processor)).initialize(params);

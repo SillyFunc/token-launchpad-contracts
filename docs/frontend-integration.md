@@ -5,6 +5,7 @@
 > 源码版本：**2026-09-23 动态安全回购测试网部署版**。`TokenConfig` 为 13 字段；市场、销毁、LP、分红四项占比之和必须为 10,000 bps。`taxDuration` 仍由 Coordinator 固定注入 `100 * 365 days`，不由 DApp 传入。
 > 当前地址来自 `broadcast/Deploy.s.sol/97/run-latest.json`，15/15 回执成功、链上代码与接线核验通过；部署者报告十个合约已完成 BscScan 源码验证。新版 Keeper 与动态 Vault 的 TokenBurn 模式已在 BSC 测试网完成端到端冒烟；该结果不替代主网部署、配置与验收。
 > 本仓库不再维护前端 SDK。DApp 只维护实际调用所需的最小 ABI；本文 §9 给出可直接裁剪的示例。
+> ⚠️ **预售托管仓分红修复待部署（pending deployment）**：本 WorkTree 源码在创建 Dividend 时排除预售仓；下列已核验的测试网地址仍是旧版，**不包含此修复**。新版本需重新部署并接线 CoordinatorFactory 与 TaxInfrastructureFactory，链上核验后才能更新本页地址和 ABI。不要把新增 `createInfrastructure(input, pair, presale, minimumShareBalance)` 签名绑定到旧工厂地址；已创建代币的分红合约也不会自动更新。
 
 ---
 
@@ -875,8 +876,11 @@ OZ 标准错误：`Ownable: caller is not the owner`（string revert，非 4 字
 |---|---|
 | `dividendToken()` | 当前固定为 WBNB |
 | `minimumShareBalance()` / `totalShares()` | 分红门槛与有效总份额 |
+| `excludedFromDividends(presale)` | 新版预售仓应返回 `true`；旧部署不满足此条件 |
 | `withdrawableDividendOf(user)` | 用户当前可领取分红 |
 | `withdrawDividends()` | 用户领取自己的分红；WBNB 自动解包为 BNB |
+
+新版中，预售仓内尚未领取的代币不参与分红；用户领取代币后，达到门槛的实际持有人才开始计入份额。若暂时没有合格持有人，Dividend 不接收入账，WBNB 留在 TaxProcessor 的待处理余额中等待后续重试。
 
 ---
 
