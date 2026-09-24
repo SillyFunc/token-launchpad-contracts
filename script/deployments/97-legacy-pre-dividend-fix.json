@@ -1,0 +1,13 @@
+{
+  "buybackVaultFactory": "0x03036eD61e4AA7324a9BA1051a92958081db75eD",
+  "buybackVaultImplementation": "0x55DCeAdFCB0742eA4FBf7742877450C0744f41d2",
+  "chainId": 97,
+  "coordinatorFactory": "0x266f95143B983E0aF7368d82eB60354713eCC47B",
+  "dividendImplementation": "0xA1Cf622740A7776615247DC6fE080BfEbc67F716",
+  "flapTaxTokenImplementation": "0xD069Ef8246579296a6DD64D589f38b6eF5197D0C",
+  "presaleFactory": "0x50A3E7538369f118090b33931B4244817161cE2d",
+  "presaleImplementation": "0x2658cC1eC0aCcdf827bf726ff7c7611cd8D83e7c",
+  "taxInfrastructureFactory": "0x78858335BB44d265E4d9e348D6e01D9F1a329ec4",
+  "taxProcessorImplementation": "0x2cEA22e923550B573508E46de3E4d583560957E9",
+  "tokenFactory": "0xa656e110Eb5C8C787EA2642509522693C175800E"
+}
