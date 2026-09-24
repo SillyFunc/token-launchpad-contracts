@@ -11,7 +11,7 @@
     "CHAIN_ID": "97",
     "READ_RPC_URL": "https://bsc-testnet-rpc.publicnode.com",
     "SEND_RPC_URL": "https://bsc-testnet-dataseed.bnbchain.org",
-    "COORDINATOR_ADDRESS": "0x266f95143B983E0aF7368d82eB60354713eCC47B",
+    "COORDINATOR_ADDRESS": "0x63e325d9782DD42915a41673dA2Cc29F8e9B8424",
     "KEEPER_ADDRESS": "0x9f87b1973361b23387D7F1b536484543a5ea1eFB",
     "DISCOVERY_PAGE_SIZE": "8",
     "MAX_ASSETS_PER_RUN": "8",
