@@ -31,7 +31,7 @@ import {VanitySaltFinder} from "../test/TokenReservation.t.sol";
 contract KeeperAcceptance is Script {
     uint256 internal constant BSC_TESTNET_CHAIN_ID = 97;
     uint64 internal constant DEADLINE_DELAY = 20 minutes;
-    /// @dev SELL_TAX_BPS=1000 时单笔 1e8 枚产出 1e7 枚税代币（= 实现合约 START_LIQ_THRESHOLD）
+    /// @dev SELL_TAX_BPS=1000 时单笔 1e8 枚产出 1e7 枚税代币，足以跨过新旧模板的归集阈值。
     uint256 internal constant DEFAULT_SELL_TOKENS = 100_000_000 ether;
 
     struct Artifact {

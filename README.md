@@ -13,11 +13,10 @@ Foundry consists of:
 
 https://book.getfoundry.sh/
 
-项目对接与运维文档：
+项目文档:
 
-- [`docs/frontend-integration.md`](docs/frontend-integration.md) — BSC 测试网前端对接
-- [`docs/frontend-integration-mainnet.md`](docs/frontend-integration-mainnet.md) — BSC 主网前端对接
-- [`docs/keeper-cloudflare.md`](docs/keeper-cloudflare.md) — Cloudflare 免费层 Keeper 部署与安全验收
+- [`docs/frontend-integration.md`](docs/frontend-integration.md) — 前端对接(BSC 主网与测试网)
+- [`docs/four-channel-tax-design.md`](docs/four-channel-tax-design.md) — 四通道税收分配的资金流设计与威胁模型
 
 ## Usage
 

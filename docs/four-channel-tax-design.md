@@ -118,3 +118,39 @@ balance deltas, and the keeper quotes the post-tax pool input. The secondary tax
 returns to the token and is processed in a later batch; it is delayed, not lost.
 Removing this recursive tax would require an explicitly approved change to the
 protected token template.
+
+## Lower tax queue threshold (2026-10-12; pending deployment)
+
+The approved deployment defaults are `START_LIQ_THRESHOLD = 400_000 ether`
+and `MIN_LIQ_THRESHOLD = 50_000 ether`. They replace the deployment script's
+10,000,000 / 5,000,000 token defaults. These are implementation immutables:
+existing clones and existing TokenFactory deployments retain their original
+values. Deploying the new implementation and its factory wiring is a separate
+release step; the existing published addresses are not a deployment of this change.
+
+Design and threat model for this parameter change:
+
+1. Tax tokens still accrue in the token, then move to its fixed TaxProcessor
+   when a subsequent transfer to the main pool checks the threshold. The
+   processor owns the pending queue until keeper processing assigns the
+   configured channels. No new asset or recipient is introduced.
+2. Successful queueing moves the actual token balance into that queue. The
+   token's existing failure fallback and the processor's swap rollback remain
+   the asset recovery paths; this change introduces no refund or rescue branch.
+3. Ordinary pool transfers can trigger queueing sooner, increasing queue-call
+   frequency and gas. They still cannot execute a swap in the user's transaction.
+   Keeper-gated price-sensitive work retains its batch caps and output protection.
+4. Trust remains in the existing token/processor wiring, authorized keeper,
+   historical price bounds and Pancake contracts. This change does not grant
+   permissions, change price sources or enlarge a keeper trade budget.
+5. Preserve token conservation, `pendingTaxTokens = processor token balance -
+   lpTokenBalance`, and `MIN <= current threshold <= initial threshold`.
+   Regression tests use the actual deployment script and clone, check the
+   400,000-token boundary and next-transfer queue timing, and measure the
+   processor's actual receipt. Dynamic adjustment remains disabled when the
+   existing `liqExpectedOutputAmount` parameter is zero.
+
+Validation: both deployment/queue-boundary tests fail with the old 10,000,000 /
+5,000,000 defaults and pass with the approved values. The complete Forge suite
+passes: 221 tests, 0 failures, 0 skipped. This is local verification, not a
+deployment or a new on-chain acceptance result.

@@ -25,8 +25,9 @@ contract Deploy is Script {
 
         vm.startBroadcast();
 
-        // FlapTaxTokenV3 实现：MIN=0.5% 供应量(5e6 ether)，START=1%(1e7 ether) — 主网口径（总量 1e9）
-        FlapTaxTokenV3 flapImpl = new FlapTaxTokenV3(5e6 ether, 1e7 ether);
+        // 新部署归集阈值：MIN=5 万枚，START=40 万枚（固定 10 亿总量的 0.005% / 0.04%）。
+        // 参数固化在实现合约中；已有模板、工厂与代币仍使用原部署值。
+        FlapTaxTokenV3 flapImpl = new FlapTaxTokenV3(50_000 ether, 400_000 ether);
 
         // 工厂与 Coordinator 存在循环引用：先建工厂（coordinator 占位 0），建好 Coordinator 后授权
         TokenFactory tokenFactory = new TokenFactory(address(flapImpl), router, address(0));
