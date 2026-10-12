@@ -1,8 +1,8 @@
-# 前端对接文档 — Token Launchpad
+# 前端对接文档 — Token Launchpad(BSC 主网)
 
-> 本文按当前源码编写,同时覆盖 **BSC 主网(chainId 56)** 与 **BSC 测试网(chainId 97)**。两者共用同一套合约逻辑与时间常量,差异只在部署地址、第三方 Router、以及已部署模板的参数版本,详见第 1 节与附录。
+> 当前部署网络:**BSC 主网(chainId 56)**。本文只描述这次主网部署的地址与参数,按当前源码编写。
 >
-> 地址以 `broadcast/Deploy.s.sol/<chainId>/run-latest.json` 为准。禁止把一个网络的地址套用到另一个网络。
+> 地址以 `broadcast/Deploy.s.sol/56/run-latest.json` 与 `script/deployments/56.json` 为准。
 
 ---
 
@@ -17,7 +17,7 @@
 7. [注意事项](#7-注意事项)
 8. [视图函数清单](#8-视图函数清单)
 9. [平台管理(仅管理员)](#9-平台管理仅管理员)
-10. [附录:部署记录与待部署变更](#10-附录部署记录与待部署变更)
+10. [附录:当前部署记录](#10-附录当前部署记录)
 
 ---
 
@@ -25,42 +25,42 @@
 
 ### 1.1 网络参数
 
-| 项 | BSC 主网 | BSC 测试网 |
-|---|---|---|
-| chainId | `56` | `97` |
-| 区块浏览器 | `https://bscscan.com` | `https://testnet.bscscan.com` |
-| 第三方 Router(PancakeSwap V2) | `0x10ED43C718714eb63d5aA57B78B54704E256024E` | `0xD99D1c33F9fC3444f8101754aBC46c52416550D1` |
-| 已部署模板的代币初始/最低归集阈值 | 1000 万 / 500 万 枚 | 1000 万 / 500 万 枚 |
-
-> 归集阈值以模板的 `START_LIQ_THRESHOLD()` 与 `MIN_LIQ_THRESHOLD()` 为准;上表与当前已广播部署一致。降低阈值属于待部署项,见附录。
+| 项 | 值 |
+|---|---|
+| 网络 | BSC 主网(BNB Smart Chain Mainnet) |
+| chainId | `56` |
+| 区块浏览器 | `https://bscscan.com` |
+| 第三方 Router(PancakeSwap V2) | `0x10ED43C718714eb63d5aA57B78B54704E256024E` |
+| 代币初始 / 最低归集阈值 | 40 万 / 5 万 枚(以模板的 `START_LIQ_THRESHOLD()` 与 `MIN_LIQ_THRESHOLD()` 为准) |
+| Keeper 地址(Java 服务) | `0xde9fB6fd189e802bce892058c26aa148eBEdB3Fa` |
 
 ### 1.2 前端入口与合约地址
 
 **前端只需要直接调用 `CoordinatorFactory`。** 其余合约由 Coordinator 调度,或通过代币/预售实例间接访问。
 
-| 合约 | 主网 | 测试网 | 前端是否直接调用 |
-|---|---|---|---|
-| **CoordinatorFactory** | `0xc7284F96716E4FbB3f794Cb407D882C29AA653B1` | `0x266f95143B983E0aF7368d82eB60354713eCC47B` | ✅ 创建代币、配置预售、读平台数据 |
-| FlapTaxTokenV3 模板 | `0xd7E12Ecd6406B993D94F0bc67a4a62681f50aA99` | `0xD069Ef8246579296a6DD64D589f38b6eF5197D0C` | ❌ 仅作为克隆实现 |
-| TokenFactory | `0x04556cBC53C9E994522B008B676958e715545564` | `0xa656e110Eb5C8C787EA2642509522693C175800E` | ❌ 由 Coordinator 调度 |
-| PRESALE 模板 | `0x6b51064D62018De9832590f1788078bDFB64Aca5` | `0x2658cC1eC0aCcdf827bf726ff7c7611cd8D83e7c` | ❌ 仅作为克隆实现(已锁定) |
-| PresaleFactory | `0x7a6B4DA821f4B2aDb1432E06E7b7aD2F20972a1A` | `0x50A3E7538369f118090b33931B4244817161cE2d` | ❌ 由 Coordinator 调度 |
-| TaxProcessor 模板 | 未部署 | `0x2cEA22e923550B573508E46de3E4d583560957E9` | ❌ 每个代币使用 EIP-1167 克隆 |
-| Dividend 模板 | 未部署 | `0xA1Cf622740A7776615247DC6fE080BfEbc67F716` | ❌ 每个代币使用 EIP-1167 克隆 |
-| TaxInfrastructureFactory | 未部署 | `0x78858335BB44d265E4d9e348D6e01D9F1a329ec4` | ❌ 由 Coordinator 调度 |
-| BuybackVault 模板 | 未部署 | `0x55DCeAdFCB0742eA4FBf7742877450C0744f41d2` | ❌ 新建金库通过克隆得到 |
-| BuybackVaultFactory | 未部署 | `0x03036eD61e4AA7324a9BA1051a92958081db75eD` | ❌ 由 Coordinator 调度 |
+| 合约 | 地址 | 前端是否直接调用 |
+|---|---|---|
+| **CoordinatorFactory** | `0xb73bdF3E86737F64E6f624112069F9D282a68e35` | ✅ 创建代币、配置预售、读平台数据 |
+| FlapTaxTokenV3 模板 | `0x6980190344e6E485119039C9DC6bEC7971E28BC2` | ❌ 仅作为克隆实现 |
+| TokenFactory | `0x0AA8E4edd3D00275B464daC30ac618a2aF14305a` | ❌ 由 Coordinator 调度 |
+| PRESALE 模板 | `0x9CA45c3aE5A9Ca8cCf3f09E4B91B48c52eF23CeD` | ❌ 仅作为克隆实现(已锁定) |
+| PresaleFactory | `0x350597F41B981cf5493a0d387FeD8646b76A0AFb` | ❌ 由 Coordinator 调度 |
+| TaxProcessor 模板 | `0xeD32EEf193Cf589c4abFA76e19d6A35614F8bA0d` | ❌ 每个代币使用 EIP-1167 克隆 |
+| Dividend 模板 | `0x53E6E5487D954AF595532b0D0660bBCd06Db8bFC` | ❌ 每个代币使用 EIP-1167 克隆 |
+| TaxInfrastructureFactory | `0x7f28Ebdc94301D349C5CD1924A7dE3d6BD7b74A6` | ❌ 由 Coordinator 调度 |
+| BuybackVault 模板 | `0x193335e9C56b4F34466b9FF66E9fB3D72dE685Bf` | ❌ 新建金库通过克隆得到 |
+| BuybackVaultFactory | `0x81E3a74e859248737E43d60Fc1D66F44a203aBc5` | ❌ 由 Coordinator 调度 |
 
-**主网未部署的模块**(四通道税收基础设施与回购金库):主网 `broadcast/Deploy.s.sol/56` 只包含前 5 个核心合约,**不包含**上表最后 5 行所列的模块。因此在主网,`createToken` 与 `createTokenWithVault` 目前不可用,前端在主网应隐藏这两个入口,待新部署完成后再开放。
-
-> 注意:主网旧部署的 `TokenFactory` 与 `CoordinatorFactory` 是按旧 ABI 部署的,不得使用本文的 13 字段 `TokenConfig` ABI 调用它们。
+> 以上地址来自 2026-10-12 的主网部署,15 笔广播交易全部上链且回执成功,链上代码与接线(`routerAddress`、`taxInfrastructureFactory`、`buybackVaultFactory`、`KEEPER_ROLE`、`DEFAULT_ADMIN_ROLE`)已核对,10 个合约已在 BscScan 完成源码验证。
+>
+> 本次部署使用的 `TokenFactory` 与 `CoordinatorFactory` 是当前 ABI。请以本文的 `TokenConfig`(13 字段)与 `createTokenWithVault` 为准调用。
 
 ### 1.3 平台费用(读链获取,勿硬编码)
 
 | 费用 | 读取 | 说明 |
 |---|---|---|
-| 发币费 | `coordinator.creationFee()` | 测试网 0.005 BNB,主网以链上为准 |
-| 地址预留费 | `coordinator.reservationFee()` | 测试网 0.001 BNB,主网以链上为准 |
+| 发币费 | `coordinator.creationFee()` | 以链上为准 |
+| 地址预留费 | `coordinator.reservationFee()` | 以链上为准 |
 
 `msg.value` 超出所需费用的部分会在同一笔交易中退回,并触发 `ExcessRefunded`。
 
@@ -230,7 +230,7 @@ struct TokenConfig {
 - 代币固定 18 位小数,总量通过 `token.maxSupply()` 读取,禁止硬编码。
 - 代币支持 ERC20Permit。
 
-**税代币归集阈值:** 代币在卖出累积税金,达到阈值后,下一笔指向主池的转账会把税金转入 TaxProcessor 的处理队列。入队不会在用户交易中执行 swap,处理由 keeper 异步完成。阈值由模板的不可变参数决定,读 `token.liquidationThreshold()` 获取当前值。
+**税代币归集阈值:** 代币在卖出累积税金,达到阈值后,下一笔指向主池的转账会把税金转入 TaxProcessor 的处理队列。入队不会在用户交易中执行 swap,处理由 keeper 异步完成。阈值由模板的不可变参数决定,读 `token.liquidationThreshold()` 获取当前值。当前主网模板为 40 万(初始)/ 5 万(最低)枚。
 
 ### 3.1.1 自动回购金库(可选)
 
@@ -322,7 +322,7 @@ struct PresaleConfig {
 | `slippage` | ≤ 1000 | `SlippageTooHigh` |
 | `creatorBuyTokens > 0` | 需要 `msg.value > 0` | `CreatorBuyTokensWithoutFunding` |
 
-> 上表时间参数在主网与测试网完全相同。源码中只有一组时间常量,不存在按链区分的分支。
+
 
 ### 3.2.1 `PresaleRoundConfig`(失败后重开)
 
@@ -541,8 +541,7 @@ const priceInBNB   = bnbReserve * 10n ** 18n / tokenReserve   // 18 位定点
 
 BNB/USD 获取:
 
-- 主网:`router.getAmountsOut(1e18, [WBNB, USDT])`,或 Binance 公共 API。
-- 测试网:测试网 BNB 无真实价格,通常以主网价格展示。
+- 链上:`router.getAmountsOut(1e18, [WBNB, USDT])`,或 Binance 公共 API。
 
 ---
 
@@ -565,8 +564,8 @@ BNB/USD 获取:
 | `InvalidTaxDistribution` | 四通道占比之和不是 10000 |
 | `InvalidMinimumShareBalance` | 分红最小持币量与分红比例不匹配 |
 | `VaultRequiresMarketChannel` | 启用金库时 `marketBps == 0` |
-| `BuybackVaultFactoryNotSet` | 金库工厂未配置(主网当前会命中) |
-| `TaxInfrastructureFactoryNotSet` | 税收基础设施未配置(主网当前会命中) |
+| `BuybackVaultFactoryNotSet` | 金库工厂未配置(当前部署已配置,正常不会出现) |
+| `TaxInfrastructureFactoryNotSet` | 税收基础设施未配置(当前部署已配置,正常不会出现) |
 | `AlreadyConfigured` | 该代币预售已配置过 |
 | `NotTokenCreator` | 调用者不是代币创建者 |
 | `TokenNotRegistered` | 代币不是本平台创建 |
@@ -657,7 +656,7 @@ BNB/USD 获取:
 
 ### 7.6 新旧代币区分
 
-主网与测试网都存在早期版本部署。判断代币是否为当前版本,应检查 `tokenExists(token)` 与 `token.maxSupply() == 1e27`。早期版本的代币可能长期停在 `BondingCurve`。
+判断代币是否为本平台创建,应检查 `tokenExists(token)`;代币总量以 `token.maxSupply()` 读取。非本平台创建的代币不应展示为本平台代币。
 
 ---
 
@@ -760,7 +759,7 @@ BNB/USD 获取:
 forge script script/SetPlatformFees.s.sol:SetPlatformFees \
   --sig "run(address,uint256,uint256)" \
   <CoordinatorFactory 地址> 5000000000000000 1000000000000000 \
-  --rpc-url <bsc 或 bsc-testnet> \
+  --rpc-url <BSC 主网 RPC> \
   --account <FOUNDRY_ACCOUNT> \
   --broadcast
 ```
@@ -769,24 +768,28 @@ forge script script/SetPlatformFees.s.sol:SetPlatformFees \
 
 ---
 
-## 10. 附录:部署记录与待部署变更
+## 10. 附录:当前部署记录
 
-### 10.1 已广播部署
+### 10.1 当前部署
 
-| 网络 | 广播文件 | 交易数 | 回执 | 备注 |
-|---|---|---:|---:|---|
-| 主网 56 | `broadcast/Deploy.s.sol/56/run-latest.json` | 7 | 7/7 成功 | 仅核心 5 合约,无四通道税收与金库 |
-| 测试网 97 | `broadcast/Deploy.s.sol/97/run-latest.json` | 15 | 15/15 成功 | 含四通道税收与金库 |
+| 网络 | chainId | 广播文件 | 部署日期 | 交易 | 回执 |
+|---|---:|---|---|---:|---|
+| BSC 主网 | 56 | `broadcast/Deploy.s.sol/56/run-latest.json` | 2026-10-12 | 15 | 15/15 成功 |
 
-两次广播的模板构造参数均为 `MIN = 5,000,000 ether`、`START = 10,000,000 ether`(即最低 500 万 / 初始 1000 万枚)。
+模板参数为 `MIN = 50,000 ether`、`START = 400,000 ether`(即最低 5 万 / 初始 40 万枚),已由链上 `START_LIQ_THRESHOLD()` 与 `MIN_LIQ_THRESHOLD()` 核实。
 
-### 10.2 待部署变更(pending deployment)
+部署所用源码包含预售托管仓的分红修复:`TaxInfrastructureFactory.createInfrastructure` 会对 Dividend 调用 `excludeAddress(presale)`。
 
-以下变更已在源码中,但**尚未在任一网络上线**。在新部署并链上核验前,前端不得假定这些变更已生效。
+### 10.2 核对与验证状态
 
-1. **归集阈值降低**:`script/Deploy.s.sol` 改为 `MIN = 50,000 ether`、`START = 400,000 ether`。已部署的模板、工厂与代币均保留旧值。
-2. **预售托管仓分红修复**:源码在创建 Dividend 时排除预售托管仓。已部署的 `TaxInfrastructureFactory` 与 `CoordinatorFactory` 不包含此修复。`createInfrastructure` 的签名 `(input, pair, presale, minimumShareBalance)` 与旧版不同,不要将新 ABI 绑定到旧工厂地址。
-3. **主网四通道与金库**:主网需要重新部署 `TaxProcessor`、`Dividend`、`TaxInfrastructureFactory`、`BuybackVault`、`BuybackVaultFactory` 并接线 Coordinator。完成前,主网不提供 `createToken` 与 `createTokenWithVault`。
+- 10 个合约均有链上代码,地址与 `script/deployments/56.json` 一致。
+- 接线已核对:`routerAddress` 为 PancakeSwap V2 主网路由器;`taxInfrastructureFactory`、`buybackVaultFactory` 指向本次部署地址。
+- 角色已核对:Keeper 持有 `KEEPER_ROLE`,部署账户持有 `DEFAULT_ADMIN_ROLE`。
+- 10 个合约均已在 BscScan 完成源码验证。
+
+### 10.3 后续待办
+
+1. 用最小金额完整走一遍:创建、配置、认购、结算、开盘、领取。金库流程需单独验证。
 
 ### 10.3 上线前核对清单
 
