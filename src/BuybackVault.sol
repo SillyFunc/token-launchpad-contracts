@@ -96,7 +96,7 @@ contract BuybackVault is ReentrancyGuard {
     uint256 public constant MIN_BUYBACK_AMOUNT = 0.001 ether;
     uint256 public constant MAX_BUYBACK_AMOUNT = 10 ether;
     uint256 public constant BUYBACK_PRECISION = 0.001 ether;
-    uint256 public constant MIN_EXECUTION_AMOUNT = 0.0001 ether;
+    uint256 public constant MIN_EXECUTION_AMOUNT = 1; // 仅拒绝零输入；不设固定 BNB 执行下限
     uint256 public constant MAX_TRIGGER_AMOUNT = 1000 ether;
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant MAX_BUYBACK_RESERVE_BPS = 100; // 单笔最多使用池中 1% WBNB 储备

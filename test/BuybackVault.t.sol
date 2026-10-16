@@ -617,17 +617,17 @@ contract BuybackVaultTest is Test {
 
     function test_timeModeCanExecuteBelowConfiguredMaximum() public {
         BuybackVault vault = _cloneInit(_timeConfig());
-        vm.deal(address(vault), 0.0005 ether);
+        vm.deal(address(vault), 0.00005 ether);
         vm.warp(block.timestamp + 60);
 
         (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
-        assertEq(amount, 0.0005 ether);
+        assertEq(amount, 0.00005 ether);
         assertEq(uint8(readiness), uint8(BuybackReadiness.Ready));
 
         vm.prank(caller);
-        vault.executeBuyback(amount, 0.0004 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(amount, 0.00004 ether, 0, uint64(block.timestamp + 1 minutes));
         assertEq(address(vault).balance, 0);
-        assertEq(vault.totalBuybackBNB(), 0.0005 ether);
+        assertEq(vault.totalBuybackBNB(), 0.00005 ether);
     }
 
     function test_reserveChangeAfterQuoteRevertsWithoutAdvancingState() public {
@@ -665,17 +665,19 @@ contract BuybackVaultTest is Test {
         assertEq(address(vault).balance, 1);
     }
 
-    function test_keeperCannotChooseAmountBelowEconomicMinimum() public {
+    function test_zeroExecutionAmountRevertsWithoutAdvancingState() public {
         BuybackVault vault = _cloneInit(_timeConfig());
         vm.deal(address(vault), 0.05 ether);
+        uint64 originalNext = vault.nextExecuteTime();
         vm.warp(block.timestamp + 60);
 
-        vm.expectRevert(abi.encodeWithSelector(UnsafeExecutionAmount.selector, 0.00005 ether, 0.01 ether));
+        vm.expectRevert(abi.encodeWithSelector(UnsafeExecutionAmount.selector, 0, 0.01 ether));
         vm.prank(caller);
-        vault.executeBuyback(0.00005 ether, 0.00004 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(0, 1, 0, uint64(block.timestamp + 1 minutes));
 
         assertEq(vault.buybackCount(), 0);
         assertEq(vault.lastExecuteTime(), 0);
+        assertEq(vault.nextExecuteTime(), originalNext);
         assertEq(address(vault).balance, 0.05 ether);
     }
 
@@ -694,11 +696,36 @@ contract BuybackVaultTest is Test {
         vault.executeBuyback(0.001 ether, 0.0009 ether, 0, uint64(block.timestamp + 1 minutes));
     }
 
-    function test_reserveCapBelowEconomicMinimumReportsExplicitReason() public {
+    function test_smallPoolExecutesBelowFormerMinimum() public {
         BuybackVault vault = _cloneInit(_timeConfig());
         vm.deal(address(vault), 0.05 ether);
         vm.warp(block.timestamp + 60);
         pairContract.setReservesForTest(100 ether, 0.005 ether); // 1% = 0.00005 BNB
+
+        (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
+        assertEq(amount, 0.00005 ether);
+        assertEq(uint8(readiness), uint8(BuybackReadiness.Ready));
+        assertTrue(vault.canExecuteBuyback());
+
+        vm.expectRevert(abi.encodeWithSelector(UnsafeExecutionAmount.selector, amount + 1, amount));
+        vm.prank(caller);
+        vault.executeBuyback(amount + 1, 1, 0, uint64(block.timestamp + 1 minutes));
+        assertEq(vault.buybackCount(), 0);
+
+        vm.prank(caller);
+        vault.executeBuyback(amount, 0.00004 ether, 0, uint64(block.timestamp + 1 minutes));
+        assertEq(vault.buybackCount(), 1);
+        assertEq(vault.totalBuybackBNB(), amount);
+        assertEq(vault.totalBurnedToken(), amount);
+        assertEq(address(vault).balance, 0.05 ether - amount);
+        assertEq(token.balanceOf(address(vault)), 0);
+    }
+
+    function test_reserveCapRoundingToZeroReportsExplicitReason() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 0.05 ether);
+        vm.warp(block.timestamp + 60);
+        pairContract.setReservesForTest(100 ether, 99); // 1% rounds down to zero wei.
 
         (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
         assertEq(amount, 0);
@@ -707,7 +734,49 @@ contract BuybackVaultTest is Test {
 
         vm.expectRevert(ReserveCapBelowMinimum.selector);
         vm.prank(caller);
-        vault.executeBuyback(0.00005 ether, 0.00004 ether, 0, uint64(block.timestamp + 1 minutes));
+        vault.executeBuyback(1, 1, 0, uint64(block.timestamp + 1 minutes));
+        assertEq(vault.buybackCount(), 0);
+        assertEq(address(vault).balance, 0.05 ether);
+    }
+
+    // This mock isolates the input boundary; it does not model real AMM output rounding.
+    function test_oneWeiTokenBuybackWithMockOutput() public {
+        BuybackVault vault = _cloneInit(_timeConfig());
+        vm.deal(address(vault), 1);
+        vm.warp(block.timestamp + 60);
+        pairContract.setReservesForTest(100 ether, 100);
+
+        (uint256 amount, BuybackReadiness readiness) = vault.previewBuyback();
+        assertEq(amount, 1);
+        assertEq(uint8(readiness), uint8(BuybackReadiness.Ready));
+        assertEq(vault.MIN_EXECUTION_AMOUNT(), 1);
+
+        vm.prank(caller);
+        vault.executeBuyback(amount, 1, 0, uint64(block.timestamp + 1 minutes));
+        assertEq(vault.buybackCount(), 1);
+        assertEq(vault.totalBuybackBNB(), 1);
+        assertEq(vault.totalBurnedToken(), 1);
+        assertEq(token.balanceOf(DEAD), 1);
+        assertEq(address(vault).balance, 0);
+    }
+
+    function test_oneWeiLpRoundingFallsBackWithoutDoubleAccounting() public {
+        BuybackConfig memory cfg = _timeConfig();
+        cfg.mode = BuybackMode.LpBurn;
+        BuybackVault vault = _cloneInit(cfg);
+        vm.deal(address(vault), 1);
+        vm.warp(block.timestamp + 60);
+
+        // The LP swap budget rounds to zero, fails its nonzero minimum, then rolls back.
+        vm.prank(caller);
+        vault.executeBuyback(1, 1, 1, uint64(block.timestamp + 1 minutes));
+        assertEq(vault.buybackCount(), 1);
+        assertEq(vault.totalBuybackBNB(), 1);
+        assertEq(vault.totalBurnedToken(), 1);
+        assertEq(vault.totalLpBurned(), 0);
+        assertEq(token.balanceOf(address(vault)), 0);
+        assertEq(wbnbToken.balanceOf(address(vault)), 0);
+        assertEq(address(vault).balance, 0);
     }
 
     function test_lpBuybackAndBurnOnlySelf() public {

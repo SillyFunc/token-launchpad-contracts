@@ -50,10 +50,9 @@ contract BuybackVaultBscMainnetForkTest is Test {
         vm.deal(address(this), 10 ether);
         token.approve(MAINNET_ROUTER, type(uint256).max);
 
-        // 低 WBNB 底池:配置的单次上限 0.001 BNB 高于池储备 1%,
-        // 因此金库应缩小实际输入,而不是永久阻塞。与测试网版本意图一致。
-        router.addLiquidityETH{value: 0.05 ether}(
-            address(token), 100_000 ether, 99_000 ether, 0.0495 ether, address(this), block.timestamp + 5 minutes
+        // 0.005 WBNB 小池低于旧版隐含的 0.01 WBNB 门槛，两种回购仍应真实成交。
+        router.addLiquidityETH{value: 0.005 ether}(
+            address(token), 100_000 ether, 99_000 ether, 0.00495 ether, address(this), block.timestamp + 5 minutes
         );
         address pair = IPancakeFactory(router.factory()).getPair(address(token), wbnb);
         assertTrue(pair != address(0), "pair must be created by the mainnet router");
@@ -66,6 +65,7 @@ contract BuybackVaultBscMainnetForkTest is Test {
         (uint256 tokenAmount,) = tokenVault.previewBuyback();
         assertLt(tokenAmount, tokenVault.buybackAmount(), "reserve cap must shrink the input");
         assertGe(tokenAmount, tokenVault.MIN_EXECUTION_AMOUNT());
+        assertEq(tokenAmount, 0.00005 ether);
 
         uint256 minTokenOut = (_quote(router, wbnb, address(token), tokenAmount) * 95) / 100;
         tokenVault.executeBuyback(tokenAmount, minTokenOut, 0, uint64(block.timestamp + 5 minutes));
@@ -76,6 +76,7 @@ contract BuybackVaultBscMainnetForkTest is Test {
         (uint256 lpAmount,) = lpVault.previewBuyback();
         assertLt(lpAmount, lpVault.buybackAmount());
         assertGe(lpAmount, lpVault.MIN_EXECUTION_AMOUNT());
+        assertLt(lpAmount, 0.0001 ether, "LP must execute below the former minimum");
 
         uint256 minFallbackOut = (_quote(router, wbnb, address(token), lpAmount) * 95) / 100;
         uint256 lpSwapAmount = (lpAmount * lpVault.LP_SWAP_BPS()) / lpVault.BPS_DENOMINATOR();
@@ -86,6 +87,51 @@ contract BuybackVaultBscMainnetForkTest is Test {
         assertGt(IERC20(pair).balanceOf(DEAD), deadLpBefore, "LP must be locked to dead address");
         assertGt(lpVault.totalLpBurned(), 0);
         assertLe(lpVault.totalBuybackBNB(), lpAmount);
+    }
+
+    function test_mainnetOneWeiRoundingRevertsWithoutAdvancingEitherMode() public {
+        IPancakeRouter02 router = IPancakeRouter02(MAINNET_ROUTER);
+        address wbnb = router.WETH();
+        MainnetForkBuybackToken token = new MainnetForkBuybackToken();
+        vm.deal(address(this), 1 ether);
+        token.approve(MAINNET_ROUTER, type(uint256).max);
+
+        // Equal raw-unit reserves make a 1 wei input round to zero output after AMM fees.
+        router.addLiquidityETH{value: 0.005 ether}(
+            address(token), 0.005 ether, 0.005 ether, 0.005 ether, address(this), block.timestamp + 5 minutes
+        );
+        address pair = IPancakeFactory(router.factory()).getPair(address(token), wbnb);
+        assertEq(_quote(router, wbnb, address(token), 1), 0);
+        uint256 pairTokenBefore = token.balanceOf(pair);
+        uint256 pairWbnbBefore = IERC20(wbnb).balanceOf(pair);
+
+        BuybackVault implementation = new BuybackVault();
+        BuybackVaultFactory factory = new BuybackVaultFactory(address(implementation), address(this));
+        for (uint256 i = 0; i < 2; i++) {
+            BuybackVault vault = _createVault(factory, token, pair, wbnb, BuybackMode(i));
+            vm.deal(address(vault), 0.01 ether);
+            uint64 originalNext = vault.nextExecuteTime();
+            (uint256 maximum,) = vault.previewBuyback();
+            assertGe(maximum, 1, "vault input checks must allow the AMM call");
+
+            // LP's zero-input subcall fails first; its TokenBurn fallback must also roll back.
+            vm.expectRevert(bytes("Pancake: INSUFFICIENT_OUTPUT_AMOUNT"));
+            vault.executeBuyback(1, 1, i == 1 ? 1 : 0, uint64(block.timestamp + 5 minutes));
+
+            assertEq(vault.buybackCount(), 0);
+            assertEq(vault.lastExecuteTime(), 0);
+            assertEq(vault.nextExecuteTime(), originalNext);
+            assertEq(vault.totalBuybackBNB(), 0);
+            assertEq(vault.totalBurnedToken(), 0);
+            assertEq(vault.totalLpBurned(), 0);
+            assertEq(address(vault).balance, 0.01 ether);
+            assertEq(token.balanceOf(address(vault)), 0);
+            assertEq(IERC20(wbnb).balanceOf(address(vault)), 0);
+            assertEq(token.balanceOf(DEAD), 0);
+            assertEq(IERC20(pair).balanceOf(DEAD), 0);
+            assertEq(token.balanceOf(pair), pairTokenBefore);
+            assertEq(IERC20(wbnb).balanceOf(pair), pairWbnbBefore);
+        }
     }
 
     function _createVault(
