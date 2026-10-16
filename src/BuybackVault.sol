@@ -7,6 +7,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IPancakeRouter02, IPancakePair} from "src/lib/interfaces/IPancakeRouter02.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
+import {ExecutionControls, IExecutionControls, ExecutionPaused} from "src/ExecutionControls.sol";
 
 // ---------------------------------------------------------------------------
 // 配置类型（发币时锁定）
@@ -30,7 +31,8 @@ enum BuybackReadiness {
     TriggerBalanceNotMet,
     TooEarly,
     InvalidPoolReserves,
-    ReserveCapBelowMinimum
+    ReserveCapBelowMinimum,
+    Paused
 }
 
 struct BuybackConfig {
@@ -85,10 +87,13 @@ error InvalidPoolReserves();
 error ReserveCapBelowMinimum();
 error UnsafeExecutionAmount(uint256 requested, uint256 maximum);
 error InvalidLpRatio();
+error UnauthorizedCreator();
+error InvalidWithdrawalRecipient();
 
 /// @notice 自动回购金库：接收 TaxProcessor 清算所得 BNB，按发币配置买回并销毁（或加 LP 死锁）。
 /// @dev `executeBuyback` 仅允许 CoordinatorFactory 授权的 keeper 调用。
 ///      `receive()` 只收款；税费清算和回购均由 keeper 分成独立交易并提交最低输出。
+///      原始代币创建者可提取金库 BNB/WBNB，包括税金和直接注资。
 contract BuybackVault is ReentrancyGuard {
     bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
     uint64 public constant MIN_INTERVAL_SECONDS = 1 minutes;
@@ -96,7 +101,7 @@ contract BuybackVault is ReentrancyGuard {
     uint256 public constant MIN_BUYBACK_AMOUNT = 0.001 ether;
     uint256 public constant MAX_BUYBACK_AMOUNT = 10 ether;
     uint256 public constant BUYBACK_PRECISION = 0.001 ether;
-    uint256 public constant MIN_EXECUTION_AMOUNT = 0.0001 ether;
+    uint256 public constant MIN_EXECUTION_AMOUNT = 1; // 仅拒绝零输入；经济性由 Keeper 判断
     uint256 public constant MAX_TRIGGER_AMOUNT = 1000 ether;
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant MAX_BUYBACK_RESERVE_BPS = 100; // 单笔最多使用池中 1% WBNB 储备
@@ -127,12 +132,21 @@ contract BuybackVault is ReentrancyGuard {
     uint256 public totalLpBurned;
     uint256 public buybackCount;
     address private _activeCaller;
+    uint256 public totalWithdrawnBNB;
+    uint256 public totalWithdrawnWBNB;
 
     event Initialized(address indexed token, address indexed pair, BuybackMode mode, TriggerMode trigger);
     event RevenueReceived(address indexed from, uint256 amount);
     event TokenBuybackExecuted(address indexed caller, uint256 bnbSpent, uint256 tokensBurned);
     event LpBuybackExecuted(address indexed caller, uint256 bnbSpent, uint256 lpBurned, uint256 tokensAdded);
     event BuybackFallbackToToken(uint256 bnbSpent);
+    event BNBWithdrawn(address indexed creator, address indexed recipient, uint256 amount);
+    event WBNBWithdrawn(address indexed creator, address indexed recipient, uint256 amount);
+
+    modifier onlyCreator() {
+        if (msg.sender != creator()) revert UnauthorizedCreator();
+        _;
+    }
 
     constructor() {
         _initialized = true;
@@ -182,6 +196,30 @@ contract BuybackVault is ReentrancyGuard {
         if (msg.value > 0) emit RevenueReceived(msg.sender, msg.value);
     }
 
+    /// @notice 原始创建者取自 Coordinator 的发币记录，不随预售 owner 变化。
+    function creator() public view returns (address) {
+        return ITokenCreatorRegistry(keeperRegistry).tokenCreators(token);
+    }
+
+    /// @notice 创建者一次提取全部 BNB/WBNB；暂停自动维护时仍可调用，不自动解包 WBNB。
+    /// @dev 按执行时余额记账，不推进回购冷却或统计；零余额跳过，任一步失败整笔回滚。
+    function withdrawAll(address payable recipient) external nonReentrant onlyCreator {
+        if (recipient == address(0) || recipient == address(this)) revert InvalidWithdrawalRecipient();
+        uint256 bnbAmount = address(this).balance;
+        uint256 wbnbAmount = IERC20(wbnb).balanceOf(address(this));
+        totalWithdrawnBNB += bnbAmount;
+        totalWithdrawnWBNB += wbnbAmount;
+
+        if (wbnbAmount > 0) {
+            TransferHelper.safeTransfer(wbnb, recipient, wbnbAmount);
+            emit WBNBWithdrawn(msg.sender, recipient, wbnbAmount);
+        }
+        if (bnbAmount > 0) {
+            TransferHelper.safeTransferETH(recipient, bnbAmount);
+            emit BNBWithdrawn(msg.sender, recipient, bnbAmount);
+        }
+    }
+
     /// @notice 条件满足时执行一笔回购。仅 CoordinatorFactory 授权的 keeper 可调用。
     /// @dev `expectedBnbIn` 是本次绑定预算且不得超过执行时重新计算的安全上限。
     ///      Token 路径花费全部预算；LP 路径按实时配比最多花该预算，未使用部分留在金库。
@@ -192,13 +230,18 @@ contract BuybackVault is ReentrancyGuard {
         nonReentrant
     {
         if (!IAccessControl(keeperRegistry).hasRole(KEEPER_ROLE, msg.sender)) revert UnauthorizedKeeper();
+        uint8 flags = IExecutionControls(keeperRegistry).executionFlags();
+        if ((flags & ExecutionControls.BUYBACK) == 0) revert ExecutionPaused(ExecutionControls.BUYBACK);
+        if (mode == BuybackMode.LpBurn && (flags & ExecutionControls.LIQUIDITY) == 0) {
+            revert ExecutionPaused(ExecutionControls.LIQUIDITY);
+        }
         if (minTokenOut == 0 || (mode == BuybackMode.LpBurn && minLpTokenOut == 0)) {
             revert InvalidMinimumOutput();
         }
         if (deadline < block.timestamp || deadline > block.timestamp + MAX_DEADLINE_DELAY) {
             revert InvalidExecutionDeadline();
         }
-        (uint256 maximumAmount, BuybackReadiness readiness) = previewBuyback();
+        (uint256 maximumAmount, BuybackReadiness readiness) = _previewBuyback();
         _revertIfNotReady(readiness);
         if (expectedBnbIn < MIN_EXECUTION_AMOUNT || expectedBnbIn > maximumAmount) {
             revert UnsafeExecutionAmount(expectedBnbIn, maximumAmount);
@@ -237,6 +280,15 @@ contract BuybackVault is ReentrancyGuard {
     /// @notice 返回当前可安全执行的精确 BNB 输入和不可执行原因。
     /// @dev `buybackAmount` 是创建者锁定的单次上限；实际输入还受金库余额和池 WBNB 储备 1% 限制。
     function previewBuyback() public view returns (uint256 executableAmount, BuybackReadiness readiness) {
+        uint8 required = ExecutionControls.BUYBACK;
+        if (mode == BuybackMode.LpBurn) required |= ExecutionControls.LIQUIDITY;
+        if ((IExecutionControls(keeperRegistry).executionFlags() & required) != required) {
+            return (0, BuybackReadiness.Paused);
+        }
+        return _previewBuyback();
+    }
+
+    function _previewBuyback() internal view returns (uint256 executableAmount, BuybackReadiness readiness) {
         uint256 balance = address(this).balance;
         if (balance < MIN_EXECUTION_AMOUNT) return (0, BuybackReadiness.InsufficientBalance);
         if ((trigger == TriggerMode.Balance || trigger == TriggerMode.TimeAndBalance) && balance < triggerAmount) {
@@ -394,4 +446,8 @@ contract BuybackVault is ReentrancyGuard {
 
 interface IWBNB {
     function deposit() external payable;
+}
+
+interface ITokenCreatorRegistry {
+    function tokenCreators(address token) external view returns (address);
 }

@@ -1,0 +1,12 @@
+# Local secrets: never commit. .dev.vars holds KEEPER_PRIVATE_KEY.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Dependencies and Cloudflare local state
+node_modules/
+.wrangler/
+worker-configuration.d.ts
+
+# Build output
+dist/

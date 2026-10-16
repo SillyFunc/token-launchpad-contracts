@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {TransferHelper} from "src/TransferHelper.sol";
+import {ExecutionControls, IExecutionControls} from "src/ExecutionControls.sol";
 import {IPancakePair, IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
 import {IFlapTaxTokenV3} from "src/lib/interfaces/IFlapTaxTokenV3.sol";
 import {IDividend} from "src/lib/dividend/IDividend.sol";
@@ -19,6 +20,15 @@ import {
 interface IWETH {
     function deposit() external payable;
     function withdraw(uint256 amount) external;
+}
+
+interface ITaxCreatorRegistry {
+    function tokenCreators(address token) external view returns (address);
+    function tokenVaults(address token) external view returns (address);
+}
+
+interface ITaxWithdrawalToken {
+    function pools(address account) external view returns (bool);
 }
 
 error AlreadyInitialized();
@@ -46,6 +56,22 @@ error InvalidLiquidityBounds();
 error InvalidMainPool();
 error InsufficientLiquidityOutput();
 error InvalidBurnAmount();
+error UnauthorizedTaxCreator();
+error TaxProcessingActive();
+error InvalidTaxWithdrawalRecipient();
+
+struct TaxWithdrawalAmounts {
+    uint256 feeToken;
+    uint256 commissionToken;
+    uint256 marketToken;
+    uint256 burnToken;
+    uint256 creatorToken;
+    uint256 feeQuote;
+    uint256 commissionQuote;
+    uint256 marketQuote;
+    uint256 burnQuote;
+    uint256 creatorQuote;
+}
 
 /// @notice Asynchronous four-channel tax processor for FlapTaxTokenV3.
 /// @dev User transfers only enqueue tax. A role-gated keeper later performs bounded swaps,
@@ -107,6 +133,7 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
     event DividendDepositDeferred(address indexed dividend, uint256 amount);
     event LiquidityAdded(uint256 tokenAmount, uint256 quoteAmount, uint256 liquidity);
     event DeflationQuoteBurned(uint256 quoteAmount, uint256 taxTokenOut);
+    event TaxAssetsWithdrawn(address indexed creator, address indexed asset, address indexed recipient, uint256 amount);
 
     receive() external payable {}
 
@@ -191,6 +218,7 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
         onlyKeeper
         returns (uint256 out)
     {
+        ExecutionControls.requireEnabled(keeperRegistry, ExecutionControls.TAX);
         if (amountIn == 0 || amountIn > pendingTaxTokens()) revert InvalidTaxAmount();
         _checkDeadline(deadline);
 
@@ -248,6 +276,46 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
         _dispatch();
     }
 
+    /// @notice Settle all queued assets without a DEX trade while tax processing and LP are paused.
+    /// @dev Only the original creator may cancel pending LP/dividend allocations. Deposited dividends
+    ///      are untouched; subsequent tax receipts remain withdrawable in another call.
+    function withdrawAll(address recipient) external nonReentrant {
+        ITaxCreatorRegistry registry = ITaxCreatorRegistry(keeperRegistry);
+        if (msg.sender != registry.tokenCreators(taxToken)) revert UnauthorizedTaxCreator();
+        if (
+            (IExecutionControls(keeperRegistry).executionFlags()
+                        & (ExecutionControls.TAX | ExecutionControls.LIQUIDITY)) != 0
+        ) {
+            revert TaxProcessingActive();
+        }
+        address quote = getQuoteToken();
+        address wrapped = weth();
+        if (taxToken == quote || taxToken == wrapped) revert QuoteTokenUnavailable();
+        _validateWithdrawalRecipient(recipient, quote, wrapped);
+        address vault = registry.tokenVaults(taxToken);
+        if (vault != address(0) && recipient == vault) revert InvalidTaxWithdrawalRecipient();
+
+        uint256 nativeAmount = address(this).balance;
+        if (nativeAmount != 0) IWETH(wrapped).deposit{value: nativeAmount}();
+        uint256 extraWrapped = quote == wrapped ? 0 : IERC20(wrapped).balanceOf(address(this));
+        _reconcileQuoteDonation();
+        TaxWithdrawalAmounts memory amounts = _prepareWithdrawal();
+
+        _withdrawAsset(taxToken, _rawTaxRecipient(feeReceiver, vault, recipient), amounts.feeToken, quote, wrapped);
+        _withdrawAsset(
+            taxToken, _rawTaxRecipient(commissionReceiver, vault, recipient), amounts.commissionToken, quote, wrapped
+        );
+        _withdrawAsset(taxToken, _rawTaxRecipient(marketAddress, vault, recipient), amounts.marketToken, quote, wrapped);
+        _withdrawAsset(taxToken, DEAD, amounts.burnToken, quote, wrapped);
+        _withdrawAsset(taxToken, recipient, amounts.creatorToken, quote, wrapped);
+        _withdrawAsset(quote, feeReceiver, amounts.feeQuote, quote, wrapped);
+        _withdrawAsset(quote, commissionReceiver, amounts.commissionQuote, quote, wrapped);
+        _withdrawAsset(quote, marketAddress, amounts.marketQuote, quote, wrapped);
+        _withdrawAsset(quote, DEAD, amounts.burnQuote, quote, wrapped);
+        _withdrawAsset(quote, recipient, amounts.creatorQuote, quote, wrapped);
+        _withdrawAsset(wrapped, feeReceiver, extraWrapped, quote, wrapped);
+    }
+
     /// @notice Pair reserved LP tax tokens with already-accounted quote and burn minted LP.
     /// @dev Token-side transfer is measured because FlapTaxTokenV3 taxes this sell into its pool.
     function addPendingLiquidity(
@@ -257,6 +325,7 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
         uint256 minLiquidity,
         uint64 deadline
     ) external nonReentrant onlyKeeper returns (uint256 quoteAmount, uint256 liquidity) {
+        ExecutionControls.requireEnabled(keeperRegistry, ExecutionControls.LIQUIDITY);
         _checkDeadline(deadline);
         if (tokenAmount == 0 || tokenAmount > lpTokenBalance || lpQuoteBalance == 0) revert LiquidityUnavailable();
         if (minQuoteAmount == 0 || minQuoteAmount > maxQuoteAmount || minLiquidity == 0) {
@@ -287,6 +356,7 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
         onlyKeeper
         returns (uint256 out)
     {
+        ExecutionControls.requireEnabled(keeperRegistry, ExecutionControls.TAX);
         if (quoteAmount == 0 || quoteAmount > pendingDeflationQuoteBalance) revert InvalidBurnAmount();
         if (minTaxTokenOut == 0) revert UnsafeMinQuoteOut();
         _checkDeadline(deadline);
@@ -322,6 +392,53 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
         // Channel floors may leave at most a few wei. Assign that dust to the always-valid
         // protocol receiver instead of accidentally activating a configured-zero channel.
         feeTokens += distributable - marketTokens - burnTokens - lpTokens - dividendTokens;
+    }
+
+    function _prepareWithdrawal() internal returns (TaxWithdrawalAmounts memory amounts) {
+        uint256 pending = pendingTaxTokens();
+        uint256 lpTokens;
+        uint256 dividendTokens;
+        (amounts.feeToken, amounts.commissionToken, amounts.marketToken, amounts.burnToken, lpTokens, dividendTokens) =
+            _splitTax(pending);
+        amounts.creatorToken = lpTokenBalance + lpTokens + dividendTokens;
+        amounts.feeQuote = feeQuoteBalance;
+        amounts.commissionQuote = commissionQuoteBalance;
+        amounts.marketQuote = marketQuoteBalance;
+        amounts.burnQuote = pendingDeflationQuoteBalance;
+        amounts.creatorQuote = lpQuoteBalance + pendingDividendQuoteTokenBalance + dividendTokenBalance;
+
+        lpTokenBalance = 0;
+        feeQuoteBalance = 0;
+        commissionQuoteBalance = 0;
+        marketQuoteBalance = 0;
+        lpQuoteBalance = 0;
+        pendingDividendQuoteTokenBalance = 0;
+        dividendTokenBalance = 0;
+        pendingDeflationQuoteBalance = 0;
+        pendingDirection = 0;
+        totalTaxTokenBurned += amounts.burnToken;
+        totalQuoteBurned += amounts.burnQuote;
+        totalQuoteSentToMarketing += amounts.marketQuote;
+        totalQuoteSentToReceiver += amounts.feeQuote + amounts.commissionQuote + amounts.marketQuote;
+    }
+
+    function _rawTaxRecipient(address receiver, address vault, address recipient) private pure returns (address) {
+        return vault != address(0) && receiver == vault ? recipient : receiver;
+    }
+
+    function _validateWithdrawalRecipient(address recipient, address quote, address wrapped) private view {
+        if (
+            recipient == address(0) || recipient == address(this) || recipient == taxToken
+                || recipient == dividendAddress || recipient == router || recipient == quote || recipient == wrapped
+                || ITaxWithdrawalToken(taxToken).pools(recipient)
+        ) revert InvalidTaxWithdrawalRecipient();
+    }
+
+    function _withdrawAsset(address asset, address recipient, uint256 amount, address quote, address wrapped) private {
+        if (amount == 0) return;
+        _validateWithdrawalRecipient(recipient, quote, wrapped);
+        TransferHelper.safeTransfer(asset, recipient, amount);
+        emit TaxAssetsWithdrawn(msg.sender, asset, recipient, amount);
     }
 
     function _creditSwapOutput(

@@ -15,6 +15,7 @@ import {TaxProcessor} from "src/TaxProcessor.sol";
 import {TaxInfrastructureFactory} from "src/TaxInfrastructureFactory.sol";
 import {Dividend} from "src/lib/dividend/Dividend.sol";
 import {IPancakeRouter02} from "src/lib/interfaces/IPancakeRouter02.sol";
+import {Reader} from "src/Reader.sol";
 
 contract Deploy is Script {
     function run() external {
@@ -51,6 +52,8 @@ contract Deploy is Script {
         BuybackVault buybackImpl = new BuybackVault();
         BuybackVaultFactory buybackFactory = new BuybackVaultFactory(address(buybackImpl), address(coordinator));
         coordinator.setBuybackVaultFactory(address(buybackFactory));
+        // One shared reader for the entire deployment, never one per token.
+        Reader reader = new Reader(address(coordinator));
 
         console2.log("FlapTaxTokenV3 impl:", address(flapImpl));
         console2.log("TokenFactory:", address(tokenFactory));
@@ -64,6 +67,7 @@ contract Deploy is Script {
         console2.log("TaxInfrastructureFactory:", address(taxInfrastructureFactory));
         console2.log("BuybackVault impl:", address(buybackImpl));
         console2.log("BuybackVaultFactory:", address(buybackFactory));
+        console2.log("Reader:", address(reader));
 
         vm.stopBroadcast();
 
@@ -72,6 +76,8 @@ contract Deploy is Script {
 
         string memory deploymentKey = "deployment";
         vm.serializeUint(deploymentKey, "chainId", block.chainid);
+        vm.serializeUint(deploymentKey, "readerSchemaVersion", 1);
+        vm.serializeAddress(deploymentKey, "reader", address(reader));
         vm.serializeAddress(deploymentKey, "flapTaxTokenImplementation", address(flapImpl));
         vm.serializeAddress(deploymentKey, "tokenFactory", address(tokenFactory));
         vm.serializeAddress(deploymentKey, "presaleImplementation", address(presaleTemplate));

@@ -5,7 +5,7 @@ pragma solidity ^0.8.13;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {BuybackVault, BuybackConfig, BuybackMode, TriggerMode} from "src/BuybackVault.sol";
+import {BuybackVault, BuybackConfig, BuybackMode, TriggerMode, IWBNB} from "src/BuybackVault.sol";
 import {BuybackVaultFactory} from "src/BuybackVaultFactory.sol";
 import {IPancakeRouter02, IPancakeFactory} from "src/lib/interfaces/IPancakeRouter02.sol";
 
@@ -24,11 +24,16 @@ contract BuybackVaultBscMainnetForkTest is Test {
     address internal constant DEAD = address(0xdead);
     uint256 internal constant BSC_MAINNET_CHAIN_ID = 56;
     bytes32 internal constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+    uint8 public executionFlags = 7;
 
     /// @dev 测试合约同时充当 keeper registry:BuybackVault 通过 hasRole 校验调用者。
     ///      只有本测试合约拥有 keeper 角色,与测试网版本语义一致。
     function hasRole(bytes32 role, address account) external view returns (bool) {
         return role == KEEPER_ROLE && account == address(this);
+    }
+
+    function tokenCreators(address) external view returns (address) {
+        return address(this);
     }
 
     function setUp() public {
@@ -50,10 +55,9 @@ contract BuybackVaultBscMainnetForkTest is Test {
         vm.deal(address(this), 10 ether);
         token.approve(MAINNET_ROUTER, type(uint256).max);
 
-        // 低 WBNB 底池:配置的单次上限 0.001 BNB 高于池储备 1%,
-        // 因此金库应缩小实际输入,而不是永久阻塞。与测试网版本意图一致。
-        router.addLiquidityETH{value: 0.05 ether}(
-            address(token), 100_000 ether, 99_000 ether, 0.0495 ether, address(this), block.timestamp + 5 minutes
+        // 0.001 WBNB 小池低于旧版隐含的 0.01 WBNB 门槛，仍应允许两种真实成交。
+        router.addLiquidityETH{value: 0.001 ether}(
+            address(token), 100_000 ether, 99_000 ether, 0.00099 ether, address(this), block.timestamp + 5 minutes
         );
         address pair = IPancakeFactory(router.factory()).getPair(address(token), wbnb);
         assertTrue(pair != address(0), "pair must be created by the mainnet router");
@@ -66,6 +70,7 @@ contract BuybackVaultBscMainnetForkTest is Test {
         (uint256 tokenAmount,) = tokenVault.previewBuyback();
         assertLt(tokenAmount, tokenVault.buybackAmount(), "reserve cap must shrink the input");
         assertGe(tokenAmount, tokenVault.MIN_EXECUTION_AMOUNT());
+        assertEq(tokenAmount, 0.00001 ether);
 
         uint256 minTokenOut = (_quote(router, wbnb, address(token), tokenAmount) * 95) / 100;
         tokenVault.executeBuyback(tokenAmount, minTokenOut, 0, uint64(block.timestamp + 5 minutes));
@@ -76,6 +81,7 @@ contract BuybackVaultBscMainnetForkTest is Test {
         (uint256 lpAmount,) = lpVault.previewBuyback();
         assertLt(lpAmount, lpVault.buybackAmount());
         assertGe(lpAmount, lpVault.MIN_EXECUTION_AMOUNT());
+        assertLt(lpAmount, 0.0001 ether, "LP must execute below the former minimum");
 
         uint256 minFallbackOut = (_quote(router, wbnb, address(token), lpAmount) * 95) / 100;
         uint256 lpSwapAmount = (lpAmount * lpVault.LP_SWAP_BPS()) / lpVault.BPS_DENOMINATOR();
@@ -86,6 +92,28 @@ contract BuybackVaultBscMainnetForkTest is Test {
         assertGt(IERC20(pair).balanceOf(DEAD), deadLpBefore, "LP must be locked to dead address");
         assertGt(lpVault.totalLpBurned(), 0);
         assertLe(lpVault.totalBuybackBNB(), lpAmount);
+
+        _assertWithdrawAll(tokenVault, wbnb);
+    }
+
+    function _assertWithdrawAll(BuybackVault tokenVault, address wbnb) internal {
+        // 验证同一金库的原生 BNB 与真实主网 WBNB 一次退出，保持回购统计。
+        IWBNB(wbnb).deposit{value: 0.002 ether}();
+        assertTrue(IERC20(wbnb).transfer(address(tokenVault), 0.002 ether));
+        address payable recipient = payable(address(0xBEEF));
+        uint256 nativeBefore = recipient.balance;
+        uint256 wrappedBefore = IERC20(wbnb).balanceOf(recipient);
+        uint256 vaultNative = address(tokenVault).balance;
+        uint256 spentBefore = tokenVault.totalBuybackBNB();
+        tokenVault.withdrawAll(recipient);
+        assertEq(address(tokenVault).balance, 0);
+        assertEq(IERC20(wbnb).balanceOf(address(tokenVault)), 0);
+        assertEq(recipient.balance - nativeBefore, vaultNative);
+        assertEq(IERC20(wbnb).balanceOf(recipient) - wrappedBefore, 0.002 ether);
+        assertEq(tokenVault.totalWithdrawnBNB(), vaultNative);
+        assertEq(tokenVault.totalWithdrawnWBNB(), 0.002 ether);
+        assertEq(tokenVault.totalBuybackBNB(), spentBefore);
+        assertEq(tokenVault.buybackCount(), 1);
     }
 
     function _createVault(

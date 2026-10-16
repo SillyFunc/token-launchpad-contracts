@@ -20,13 +20,14 @@ contract BuybackVaultBscForkTest is Test {
     address internal constant ROUTER = 0xD99D1c33F9fC3444f8101754aBC46c52416550D1;
     address internal constant DEAD = address(0xdead);
     bytes32 internal constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
+    uint8 public executionFlags = 7;
 
     function hasRole(bytes32 role, address account) external view returns (bool) {
         return role == KEEPER_ROLE && account == address(this);
     }
 
     function test_realPancakeTokenAndLpBuyback() public {
-        if (block.chainid != 97) return;
+        vm.skip(block.chainid != 97, "BSC testnet fork required; local chain is not a fork");
 
         IPancakeRouter02 router = IPancakeRouter02(ROUTER);
         address wbnb = router.WETH();
@@ -34,10 +35,9 @@ contract BuybackVaultBscForkTest is Test {
         vm.deal(address(this), 10 ether);
 
         token.approve(ROUTER, type(uint256).max);
-        // 故意使用低 WBNB 底池：配置上限 0.001 BNB 会高于池储备的 1%，
-        // 用真实 Pancake Pair 验证 Vault 会缩小实际输入而不是永久阻塞。
-        router.addLiquidityETH{value: 0.05 ether}(
-            address(token), 100_000 ether, 99_000 ether, 0.0495 ether, address(this), block.timestamp + 5 minutes
+        // 0.001 WBNB 小池验证取消旧固定下限后，两种模式均能真实成交。
+        router.addLiquidityETH{value: 0.001 ether}(
+            address(token), 100_000 ether, 99_000 ether, 0.00099 ether, address(this), block.timestamp + 5 minutes
         );
         address pair = IPancakeFactory(router.factory()).getPair(address(token), wbnb);
         assertTrue(pair != address(0));
@@ -50,6 +50,7 @@ contract BuybackVaultBscForkTest is Test {
         (uint256 tokenAmount,) = tokenVault.previewBuyback();
         assertLt(tokenAmount, tokenVault.buybackAmount());
         assertGe(tokenAmount, tokenVault.MIN_EXECUTION_AMOUNT());
+        assertEq(tokenAmount, 0.00001 ether);
         uint256 minTokenOut = (_quote(router, wbnb, address(token), tokenAmount) * 95) / 100;
         tokenVault.executeBuyback(tokenAmount, minTokenOut, 0, uint64(block.timestamp + 5 minutes));
         assertGt(token.balanceOf(DEAD), 0);
@@ -59,6 +60,7 @@ contract BuybackVaultBscForkTest is Test {
         (uint256 lpAmount,) = lpVault.previewBuyback();
         assertLt(lpAmount, lpVault.buybackAmount());
         assertGe(lpAmount, lpVault.MIN_EXECUTION_AMOUNT());
+        assertLt(lpAmount, 0.0001 ether);
         uint256 minFallbackOut = (_quote(router, wbnb, address(token), lpAmount) * 95) / 100;
         uint256 lpSwapAmount = (lpAmount * lpVault.LP_SWAP_BPS()) / lpVault.BPS_DENOMINATOR();
         uint256 minLpOut = (_quote(router, wbnb, address(token), lpSwapAmount) * 95) / 100;

@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import {Test} from "forge-std/Test.sol";
 import {TaxProcessor} from "src/TaxProcessor.sol";
 import {TaxProcessorInitParams} from "src/lib/interfaces/ITaxProcessor.sol";
+import {ExecutionControls, ExecutionPaused} from "src/ExecutionControls.sol";
 
 contract StatefulERC20 {
     mapping(address => uint256) public balanceOf;
@@ -173,12 +174,25 @@ contract PullingDividend {
 contract TaxProcessorLiquidityTest is Test {
     address private constant KEEPER = address(0xCA11);
     address private constant DEAD = address(0xdead);
+    uint8 private _executionFlags = 7;
+
+    function executionFlags() external view returns (uint8) {
+        return _executionFlags;
+    }
 
     function hasRole(bytes32 role, address account) external pure returns (bool) {
         return role == keccak256("KEEPER_ROLE") && account == KEEPER;
     }
 
     function test_StatefulSwapAndLiquidityUseActualPostTaxReceipts() public {
+        _exerciseSwapAndLiquidity(false);
+    }
+
+    function test_StatefulPausesPreserveAssetsAndResumeIndependentOperations() public {
+        _exerciseSwapAndLiquidity(true);
+    }
+
+    function _exerciseSwapAndLiquidity(bool pauseAndResume) internal {
         StatefulTaxToken token = new StatefulTaxToken();
         StatefulWBNB quote = new StatefulWBNB();
         StatefulPair pair = new StatefulPair(address(token), address(quote));
@@ -217,10 +231,23 @@ contract TaxProcessorLiquidityTest is Test {
         token.configurePool(address(pair), 1_000);
 
         token.mint(address(token), 10_000 ether);
+        if (pauseAndResume) _executionFlags = 0;
         vm.prank(address(token));
         token.approve(address(processor), type(uint256).max);
         vm.prank(address(token));
         processor.processTaxTokens(10_000 ether);
+
+        if (pauseAndResume) {
+            vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.TAX));
+            vm.prank(KEEPER);
+            processor.processPendingTax(10_000 ether, 1, uint64(block.timestamp + 60));
+            assertEq(processor.pendingTaxTokens(), 10_000 ether);
+            assertEq(token.balanceOf(address(pair)), 100_000 ether);
+            assertEq(quote.balanceOf(address(pair)), 10_000 ether);
+            assertEq(token.balanceOf(DEAD), 0);
+            assertEq(dividend.deposited(), 0);
+            _executionFlags = ExecutionControls.TAX;
+        }
 
         vm.prank(KEEPER);
         uint256 quoteOut = processor.processPendingTax(10_000 ether, 1, uint64(block.timestamp + 60));
@@ -236,6 +263,23 @@ contract TaxProcessorLiquidityTest is Test {
         uint256 actualLpToken = 900 ether;
         uint256 neededQuote = actualLpToken * quoteReserve / tokenReserve;
         uint256 expectedLiquidity = actualLpToken * pair.totalSupply() / tokenReserve;
+
+        if (pauseAndResume) {
+            uint256 pendingQuote = processor.lpQuoteBalance();
+            vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.LIQUIDITY));
+            vm.prank(KEEPER);
+            processor.addPendingLiquidity(
+                1_000 ether, neededQuote, neededQuote, expectedLiquidity, uint64(block.timestamp + 60)
+            );
+            assertEq(processor.lpTokenBalance(), 1_000 ether);
+            assertEq(processor.lpQuoteBalance(), pendingQuote);
+            assertEq(token.balanceOf(address(pair)), tokenReserve);
+            assertEq(quote.balanceOf(address(pair)), quoteReserve);
+            assertEq(pair.balanceOf(DEAD), 0);
+            assertEq(processor.totalTokenAddedToLiquidity(), 0);
+            assertEq(token.balanceOf(address(token)), 800 ether);
+            _executionFlags = ExecutionControls.LIQUIDITY;
+        }
 
         vm.prank(KEEPER);
         processor.addPendingLiquidity(

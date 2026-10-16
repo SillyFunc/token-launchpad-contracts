@@ -1,8 +1,10 @@
 # 前端对接文档 — Token Launchpad(BSC 主网)
 
-> 当前部署网络:**BSC 主网(chainId 56)**。本文只描述这次主网部署的地址与参数,按当前源码编写。
+> 当前部署网络:**BSC 主网(chainId 56)**。第 1–10 节描述 2026-10-12 已部署版本;第 11 节描述 2026-10-16 源码新增能力,状态为 **pending deployment（待部署）**。
 >
 > 地址以 `broadcast/Deploy.s.sol/56/run-latest.json` 与 `script/deployments/56.json` 为准。
+>
+> 当前源码的新 ABI 不得直接绑定上述旧地址。新 Coordinator、TaxProcessor、Vault 与 Reader 尚无本轮已核验部署地址。
 
 ---
 
@@ -18,6 +20,7 @@
 8. [视图函数清单](#8-视图函数清单)
 9. [平台管理(仅管理员)](#9-平台管理仅管理员)
 10. [附录:当前部署记录](#10-附录当前部署记录)
+11. [待部署版本:执行开关、统一读取与资金回收](#11-待部署版本执行开关统一读取与资金回收)
 
 ---
 
@@ -53,7 +56,7 @@
 
 > 以上地址来自 2026-10-12 的主网部署,15 笔广播交易全部上链且回执成功,链上代码与接线(`routerAddress`、`taxInfrastructureFactory`、`buybackVaultFactory`、`KEEPER_ROLE`、`DEFAULT_ADMIN_ROLE`)已核对,10 个合约已在 BscScan 完成源码验证。
 >
-> 本次部署使用的 `TokenFactory` 与 `CoordinatorFactory` 是当前 ABI。请以本文的 `TokenConfig`(13 字段)与 `createTokenWithVault` 为准调用。
+> 本表对应 2026-10-12 部署版本的 ABI。该版本的 `TokenConfig` 为 13 字段,支持本文既有 `createTokenWithVault` 接口;第 11 节的新维护接口不在这些旧地址上生效。
 
 ### 1.3 平台费用(读链获取,勿硬编码)
 
@@ -67,6 +70,8 @@
 ### 1.4 ABI 获取
 
 ABI 以编译产物为唯一来源。前端仓库只保留实际调用的最小 ABI,不要复制整份产物。
+
+旧地址须使用相应部署版本的 ABI。下列命令读取的是**当前工作区源码**:本轮新增接口尚未部署,不能据此将旧地址升级为新版配置。部署核验前,新方法只用于本地验证或待部署配置。
 
 ```bash
 forge inspect CoordinatorFactory abi --json > coordinator.abi.json
@@ -234,6 +239,8 @@ struct TokenConfig {
 
 ### 3.1.1 自动回购金库(可选)
 
+本节数值与就绪原因对应第 1.2 节的已部署版本。取消固定 0.0001 BNB 下限及新增暂停状态属于第 11 节的待部署版本。
+
 `createTokenWithVault` 与 `createToken` 参数相同,另加一个 `BuybackConfig`。启用后,市场通道的税金收款人被替换为金库,其余三个通道保持不变。因此 `marketBps` 必须大于 0(`VaultRequiresMarketChannel`)。
 
 ```solidity
@@ -288,7 +295,7 @@ struct BuybackConfig {
 | 4 `InvalidPoolReserves` | 交易对无双边储备 |
 | 5 `ReserveCapBelowMinimum` | 储备的 1% 低于执行下限 |
 
-实际可执行额恒为 `min(金库余额, buybackAmount, 交易对 WBNB 储备 × 1%)`。低流动性时会自动缩小,不会因固定金额超限而永久卡住。
+实际可执行额恒为 `min(金库余额, buybackAmount, 交易对 WBNB 储备 × 1%)`。已部署版本要求结果至少为 0.0001 BNB;因此 WBNB 储备少于 0.01 BNB 时仍会返回 `ReserveCapBelowMinimum`,即使金库余额充足也不能执行。新版处理见第 11 节。
 
 ### 3.2 `PresaleConfig`(11 字段,仅 `setupPresale` 一次性生效)
 
@@ -798,3 +805,202 @@ forge script script/SetPlatformFees.s.sol:SetPlatformFees \
 3. 在目标网络读取 `coordinator.routerAddress()`,确认其 `WETH()` 与 `factory()` 调用成功。
 4. 读取模板的 `START_LIQ_THRESHOLD()` 与 `MIN_LIQ_THRESHOLD()`,与预期值比对。
 5. 用最小金额完整走一遍:创建、配置、认购、结算、开盘、领取。金库流程需单独验证。
+
+---
+
+## 11. 待部署版本:执行开关、统一读取与资金回收
+
+**状态:pending deployment。以下接口没有本轮已核验的主网或测试网地址,不得向第 1.2 节的旧地址发送这些新调用。** 本轮没有修改 `broadcast/`、`script/deployments/56.json` 或 `script/deployments/97.json` 的既有部署含义。
+
+旧 clone 固定指向原实现,Factory 的实现地址不可变,旧 Coordinator 的工厂接线只能配置一次。因此这次源码改造不会升级已有代币实例,也不能取出旧 Vault 的 BNB。部署并核对接线、角色、代码和 ABI 后,才能单独发布新版地址配置。
+
+### 11.1 三个全局执行开关
+
+新版 Coordinator 是执行控制注册中心。仅其 `DEFAULT_ADMIN_ROLE` 可更新开关,Keeper 角色没有更新权限。
+
+```solidity
+function executionFlags() external view returns (uint8);
+function setExecutionControls(
+    bool taxProcessingEnabled,
+    bool liquidityEnabled,
+    bool buybackEnabled
+) external;
+event ExecutionControlsUpdated(uint8 executionFlags);
+error ExecutionPaused(uint8 operation);
+```
+
+| 位值 | 状态读取 | 关闭后禁止的资金操作 |
+|---:|---|---|
+| `1` | `(flags & 1) != 0` | TaxProcessor 的 `processPendingTax`、`processPendingBurn` |
+| `2` | `(flags & 2) != 0` | TaxProcessor 的 `addPendingLiquidity`;Vault 的整笔 `LpBurn` 回购 |
+| `4` | `(flags & 4) != 0` | Vault 的 `executeBuyback`,包括 TokenBurn 和 LpBurn |
+
+初始值 `7` 表示全部允许;`setExecutionControls(false,false,false)` 写入 `0`,表示全部暂停。它与发币开关 `factoryEnabled` 独立。LpBurn 需同时允许 liquidity 与 buyback;LP 暂停在外层回购入口检查,不会触发 fallback 改为 TokenBurn 后继续支出。
+
+各维护入口均在链上重新读取注册中心并强制检查,注册中心调用失败时禁止执行。设置暂停本身不改资产余额、分账、回购次数或冷却;正常收税、`processTaxTokens` 入队、固定收款人 `dispatch()`、正常交易和已有分红领取继续可用。仅暂停 LP 而保持清算时,LP 两边资产保留在 `lpTokenBalance/lpQuoteBalance`,恢复后重新报价继续处理。**同时关闭 TAX 和 LIQUIDITY 时,还会向所有代币的原始创建者开放第 11.4 节的 TaxProcessor 结算权**,包括临时暂停;已结算资产不会在恢复开关后自动归还。
+
+`ExecutionPaused` 的参数为被禁止的操作位值。暂停交易先上链后,此前已签名的 Keeper 交易仍会回滚并消耗 Gas;前端显示状态不能保证未来交易一定执行。旧实例没有新开关检查,不能用新 Coordinator 的开关控制旧实例。
+
+| ABI 项 | selector / topic0 |
+|---|---|
+| `executionFlags()` | `0xa9a0c49f` |
+| `setExecutionControls(bool,bool,bool)` | `0x1f7d747d` |
+| `ExecutionPaused(uint8)` | `0xfec64777` |
+| `ExecutionControlsUpdated(uint8)` | `0x791dc0b316c439749670138dc38ad814b0c98686387c86b96201eca4d91d2d3c` |
+
+以上签名已用 `cast sig` / `cast keccak` 从源码签名计算,不代表任何地址已部署。
+
+### 11.2 小额回购与就绪状态
+
+新版取消固定 **0.0001 BNB** 执行下限,输入仍必须至少为 **1 wei**,且不得超过 `min(BNB余额,buybackAmount,WBNB储备×1%)`。保留 Keeper 角色、十分钟 deadline、非零最低输出、实际到账检查和既有回购模式。1% 上限不会因为取消最低金额而放宽。
+
+WBNB 储备少于 0.01 BNB 的小池可以产生正数执行额;若储备比例向下取整为零、买入实际输出为零或 LP 整数舍入无法铸造有效 LP,仍须停止或回滚,不能仅增加统计而记作成功。创建时 `buybackAmount` 仍是原范围的单次**上限**,没有放宽创建参数的范围或精度。
+
+`previewBuyback()` 仍返回 `(uint256 executableAmount,uint8 readiness)`,原 `0–5` 的编号保留,新增 `6 Paused`。注册中心读取失败会直接报错,不伪装为 `Paused`。
+
+| readiness | 名称 | 新版含义 |
+|---:|---|---|
+| `0` | `Ready` | 合约前置条件满足;仍需有效输出报价、Keeper 权限与 Gas 判断 |
+| `1` | `InsufficientBalance` | 金库 BNB 为零 |
+| `2` | `TriggerBalanceNotMet` | 余额触发模式下未达到创建者配置的门槛 |
+| `3` | `TooEarly` | 首次时间或执行间隔尚未满足 |
+| `4` | `InvalidPoolReserves` | 任一资产储备为零 |
+| `5` | `ReserveCapBelowMinimum` | 保留旧名称;新版指 1% 储备上限向下取整后不足 1 wei |
+| `6` | `Paused` | buyback 关闭,或当前为 LpBurn 且 liquidity 关闭 |
+
+`getVaultStats()` 保留原有 **17 个字段及顺序**,提款累计数据通过独立 getter 获取。
+
+Keeper 仍可因价格锚点、输出舍入、Gas 经济性或预算返回等待状态。`MAX_GAS_COST_BPS` 默认 `1000`（最大 Gas 费用不超过本笔保守价值的 10%）,可配置范围为 `1–10000`;每币和全局窗口 Gas 预算继续适用。因此“链上允许小额回购”不代表自动服务会为不经济的小额交易花 Gas。
+
+### 11.3 BuybackVault 创建者提款
+
+当前测试阶段使用**一个 `BuybackVault` 实现**,直接包含 BNB/WBNB 提款,不再区分测试与正式实现。后续正式上线时重新部署合约。本轮沿用原 initializer、Factory 与 `BuybackConfig`,不新增创建者初始化参数或存储。前端必须明确提示**创建者可提取金库资金**,不能将本版金库宣传为不可撤回。
+
+金库以 `Coordinator.tokenCreators(token)` 确认原始创建者,不以预售 owner 或后来持币地址确定权限。仅该创建者可以调用 `withdrawAll(recipient)`,将执行时的 BNB/WBNB 全部余额转至其指定的非零、非金库自身地址。无需填写金额,一笔交易完成。权限覆盖税金与直接注资,不区分“本金”和“收益”。BNB 与 WBNB 分别计量;展示 WBNB 余额时需读取该资产的 ERC20 `balanceOf(vault)`,不能将 BNB 余额视为二者之和。
+
+合约先读取两种余额并更新各自累计提款量,再依次转出非零 WBNB、非零 BNB。某种余额为零时跳过该资产;两者均为零时成功无操作且不发事件。提款与回购共用重入保护,任一步转账或接收者回调失败时,两种资产转账、累计提款量和事件全部回滚。提款不会推进回购冷却或增加累计回购支出。提款先执行使已报价回购余额不足时,回购须回滚并重新报价;不能自动缩额继续使用旧报价。接收者若在回调中主动返还资产,该新增余额留待下一次提款。
+
+使用 `script/Deploy.s.sol:Deploy` 与 `script/deployments/<chainId>.json` 单一路径,新版部署记录包含 `reader` 与 `readerSchemaVersion=1`。本轮没有执行部署或改写现有部署记录,不能因脚本已更新就将旧记录当作支持提款的新地址。
+
+新版金库接口如下,累计量和事件金额均为对应资产的最小单位。`withdrawAll` 原样转出 WBNB,不会解包为 BNB;该方法不依赖三个自动化开关的开闭状态。本次以它替换此前草案中的两个按金额提款方法,不再保留部分提款入口。
+
+```solidity
+function creator() external view returns (address);
+function totalWithdrawnBNB() external view returns (uint256);
+function totalWithdrawnWBNB() external view returns (uint256);
+function withdrawAll(address payable recipient) external;
+event BNBWithdrawn(address indexed creator, address indexed recipient, uint256 amount);
+event WBNBWithdrawn(address indexed creator, address indexed recipient, uint256 amount);
+```
+
+| 金库方法 / 错误 | selector | 含义 |
+|---|---|---|
+| `creator()` | `0x02d05d3f` | 从固定 Coordinator 记录查询原始创建者 |
+| `totalWithdrawnBNB()` | `0x03c52528` | 累计成功回收的 BNB |
+| `totalWithdrawnWBNB()` | `0x683eee78` | 累计成功回收的 WBNB |
+| `withdrawAll(address)` | `0xfa09e630` | 创建者一次回收执行时全部 BNB 和 WBNB;两者均为零时成功无操作 |
+| `UnauthorizedCreator()` | `0x8ef0dd5d` | 调用者不是原始创建者;Keeper/管理员角色本身不授予提款权 |
+| `InvalidWithdrawalRecipient()` | `0xb6061256` | 接收人为零地址或金库自身 |
+| `ETHTransferFailed(address)` | `0x1c988062` | 接收者拒绝 BNB 或回调失败;整笔提款回滚 |
+| `TransferFailed(address,address)` | `0x523c3aaa` | WBNB 转账失败;参数依次为资产与接收者 |
+
+| 金库事件 | topic0 |
+|---|---|
+| `BNBWithdrawn(address,address,uint256)` | `0x7d1ee786b44013dac56ff80394b0f72d1a7d8120f5cde9a1304eabc78a7980ce` |
+| `WBNBWithdrawn(address,address,uint256)` | `0x5f92646e296b84d55bbd67199030fcfaac2af3236ec4b5d0693b6185f21ea07a` |
+
+两个事件的 `topic1/topic2` 分别为原始创建者与接收者,数量在 data 中;仅对非零资产的实际转账发出对应事件。提款失败时累计回收量和事件也一并回滚;共享的 `ReentrancyGuard` 阻止提款与回购的交叉重入。创建者记录读取失败时拒绝提款,不会以管理员或预售 owner 作为备用授权人。`withdrawAll` 没有金额参数,因此移除原草案的金额检查错误。以上 selector/topic 均由实际源码签名计算,仍为 **pending deployment**。
+
+验收脚本 `KeeperAcceptance` 与 `PresaleAcceptance` 使用 `script/deployments/<chainId>.json`;产物分别为 `<chainId>-keeper-acceptance.json` 与 `<chainId>-presale-acceptance.json`。不再提供实现模式切换。验收仍需核对目标 Coordinator 与代币创建者、预售仓、金库的链上归属;脚本仅支持 BSC 测试网 chainId `97`,不会自动部署。
+
+本节只覆盖已进入金库的 BNB/WBNB。TaxProcessor 中的待清税费、单边 LP、尚未分配分红与直接收到的 BNB 使用下一节的独立结算入口;已经进入 Dividend 的资产仍保障持有人领取。已销毁代币与发往 dead 的 LP 是预期不可逆终态。
+
+### 11.4 TaxProcessor 暂停后的创建者结算
+
+**状态:pending deployment,源码实现与本地资金回归已完成,尚未部署。** 用户已明确授权待加池资产及尚未进入 Dividend 的分红资金归原始代币创建者。使用新版部署的 `Coordinator.tokenTaxProcessors(token)` 定位对应处理器,直接向该处理器调用以下新方法;不得向 Coordinator、Vault 或旧 TaxProcessor 地址误发调用。
+
+```solidity
+function withdrawAll(address recipient) external;
+event TaxAssetsWithdrawn(
+    address indexed creator,
+    address indexed asset,
+    address indexed recipient,
+    uint256 amount
+);
+error TaxProcessingActive();
+error UnauthorizedTaxCreator();
+error InvalidTaxWithdrawalRecipient();
+```
+
+调用者必须是 `Coordinator.tokenCreators(taxToken)` 登记的原始创建者,预售 owner 变更不会转移权限;Keeper 和管理员角色本身没有结算权。管理员须先把 TAX 与 LIQUIDITY 两位均关闭,即 `(executionFlags & 3) == 0`;BUYBACK 位可以保持开启。仅关闭其中一项不足以结算。**这里没有永久停用状态,任何临时全局暂停也会让所有代币创建者获得同样的结算机会**,前端和管理员必须明确这一权限效果。
+
+`recipient` 只决定归属创建者部分的接收地址,不改变平台费、佣金和普通市场收款人的归属。拒绝零地址、TaxProcessor 自身、税代币、Dividend、router、quote、WBNB 和该税代币登记的任意 pool 地址,防止将回收款送回交易或内部记账入口。创建者指定 recipient 还不得是 Coordinator 登记的本币 Vault,避免原始税代币转入仅支持 BNB/WBNB 提款的 Vault。每笔非零转出的实际固定收款人也须通过上述危险地址检查;无效时整笔回滚,不因属于固定配置就绕过校验。固定 quote 通道仍可向本币 Vault 分配,其中 raw 税代币通道则按下表改发创建者。固定 Coordinator 的读取失败时拒绝结算,不退回管理员授权或绕过开关。
+
+| 处理器持有的资产 | 结算去向 |
+|---|---|
+| 未清算税代币的 fee / commission / market 份额 | 沿用 `_splitTax` 的原配比与舍入规则,原币发原收款人;若原收款人是 Coordinator 为本币登记的非零 Vault,该税代币份额改发创建者指定 recipient,避免在只支持 BNB/WBNB 提款的 Vault 形成税代币滞留 |
+| 未清算税代币的 burn 份额 | 原币转入 dead |
+| 已预留 LP 税代币及未清税的 LP / dividend 份额 | 原币发创建者指定 recipient |
+| 已记账的 fee / commission / market quote | quote 原币发原固定收款人;其中 Vault 收到 WBNB 后,创建者再调用 Vault.withdrawAll 取出 |
+| `lpQuoteBalance` / `pendingDividendQuoteTokenBalance` / `dividendTokenBalance` | quote 原币发创建者指定 recipient,不必凑齐双边 LP,不要求存在合格分红持有人 |
+| `pendingDeflationQuoteBalance` | quote 原币发 dead,不兑换税代币、不记录为已买回税代币 |
+| 处理器原生 BNB | 先包装为 WBNB;quote 是 WBNB 时按既有 donation 规则归 feeReceiver,否则额外 WBNB 原币发 feeReceiver |
+| 超出 quote 账本的捐赠余额 | 沿用既有 donation 规则归 feeReceiver |
+| 已进入 Dividend 的资金 | 不受本入口影响,仍由持有人按原领取规则领取 |
+
+本方法不执行 DEX swap、加池或价格换算,所有 WBNB 均以 ERC20 原币转出,不会转成 BNB。先核对实际余额覆盖账本,清零本批全部待处理账本与 `pendingDirection`,再执行分配。任何转账、包装或外部调用失败均整笔回滚,先前转账、账本变化、统计和事件不保留;入口与现有维护/dispatch 共用重入保护。接收者拒收或外部资产合约失效仍可能阻塞本次结算,不能宣传为任意故障下的通用资产救援。
+
+仅实际 raw 税代币销毁增加 `totalTaxTokenBurned`,实际 quote 销毁增加 `totalQuoteBurned`;quote 派发沿用 `totalQuoteSentToReceiver`,市场 quote 派发同时增加 `totalQuoteSentToMarketing`。归创建者的 LP / dividend 资产退出不增加加池成功量、已派发分红量或回购统计。每笔非零转出发出 `TaxAssetsWithdrawn`;amount 是处理器转出的对应资产最小单位,不对未知转账税资产承诺接收者一定等额到账。全零余额时成功无操作且不发转出事件。
+
+| 方法 / 错误 | selector | 含义 |
+|---|---|---|
+| `withdrawAll(address)` | `0xfa09e630` | 原始创建者在 TAX 与 LIQUIDITY 均关闭时按通道结算处理器全部受管资产;与 Vault 方法同 selector,调用目标和语义不同 |
+| `TaxProcessingActive()` | `0x7bb6b217` | TAX 或 LIQUIDITY 仍开启 |
+| `UnauthorizedTaxCreator()` | `0x62804125` | 调用者不是该税代币原始创建者 |
+| `InvalidTaxWithdrawalRecipient()` | `0xb8c5c4a1` | 创建者指定 recipient 属于禁止范围（含本币 Vault）,或非零转出的实际固定收款人属于危险地址;固定 quote 通道的正常 Vault 收款不因此被禁止 |
+| `AccountingInvariant()` | `0x1406395f` | 实际资产不足以覆盖对应待处理账本,整笔回滚 |
+
+| 事件 | topic0 |
+|---|---|
+| `TaxAssetsWithdrawn(address,address,address,uint256)` | `0x34156777a4223d89a71e842e63e755cc0b318be7a36347edf7c4a339561933b0` |
+
+事件 `topic1/topic2/topic3` 依次是原始创建者、资产、实际接收地址,amount 在 data 中;按出账逐笔记录,同一资产和接收者可能出现多个通道事件,客户端汇总时累加即可。以上 selector/topic 从签名计算,不是已部署证明。
+
+暂停期间 `processTaxTokens` 仍可收到后续税,原始创建者可再次调用本方法结算,不把首次清空当作永远无余额。`dispatch()` 继续允许把待分红款存入 Dividend;若它先上链,已入 Dividend 的那部分不能再由创建者取走。结算和正常派发之间的交易排序不构成对同一笔资产的双重领取。恢复开关只恢复后续维护能力,不会撤销已完成的创建者结算。
+
+本方法只处理约定的税代币、quote 与 BNB/WBNB,不提供任意 ERC20 sweep,不挪用 Dividend 已记账资金,不修改旧实例。本轮已完成 26 项退出边界测试、真实 Flap/Dividend 领取权益集成与 BSC/Pancake fork 验证,全量结果及成本见 [维护设计](maintenance-design.md)。新接口仍需新部署与接线核验;当前地址继续使用旧部署 ABI。
+
+### 11.5 Reader 统一只读快照
+
+新版全平台只部署一个 `Reader`,构造时固定绑定新版 Coordinator。它不托管资产、不需要 Keeper 角色。入口为 `getTokenSnapshot(address token)`（selector `0x1bd26a50`）,返回一个带命名组件的 ABI tuple,客户端解码为对象;不是链上 JSON 字符串。
+
+| 对象字段 | 内容 |
+|---|---|
+| `schemaVersion` | `uint8`,快照结构版本,本轮版本 `1` |
+| `blockNumber` / `blockTimestamp` | 均为 `uint256`,同一次只读执行的区块号与 Unix 秒 |
+| `contracts` | 五个 `address`:`token`、`pair`、`taxProcessor`、`vault`、`wbnb` |
+| `controls` | `uint8 executionFlags`,按 `1/2/4` 解码 |
+| `pool` | 三个 `uint256`:`reserveToken`、`reserveWbnb`、`totalSupply`;`uint8 state`;`uint16 buyTaxRate/sellTaxRate`;`uint256 taxExpirationTime` |
+| `tax` | `uint256 pendingAmount`、`feeConfig`（既有 `feeConfigV2` 结构） |
+| `liquidity` | 两个 `uint256`:`pendingToken`、`pendingWbnb` |
+| `buyback` | 两个 `uint256`:BNB `balance`、`executableAmount`;两个 `uint8`:`mode`、`readiness`;`uint64 nextExecuteTime` |
+
+没有金库时 `contracts.vault` 明确为零地址,整个 `buyback` 对象为零值;必须先判断 Vault 地址,不能将零值 `readiness=0` 解读为存在可执行金库。注册代币、合约接线与核心状态读取失败时应报错,不能把异常包装成零余额或“无需执行”。返回的即时储备只用于展示和约束量级,不能作为同池成交的独立抗操纵报价。
+
+| Reader 方法 / 错误 | selector | 含义 |
+|---|---|---|
+| `coordinator()` | `0x0a009097` | Reader 固定绑定的 Coordinator |
+| `getTokenSnapshot(address)` | `0x1bd26a50` | 读取注册代币的完整快照 |
+| `InvalidReaderCoordinator()` | `0x640c6747` | 构造参数无代码或控制位不符合本版约定;不支持的 Coordinator ABI 也会使构造失败 |
+| `ReaderUnknownToken(address)` | `0x507cd83f` | Coordinator 未登记该代币的创建者 |
+| `ReaderInvalidPair()` | `0x8328f762` | Pair 的两种资产不是该代币与 WBNB |
+
+Keeper 通过配置 `READER_ADDRESS` 启用 Reader,并核对其 `coordinator()` 与所配置 Coordinator 一致。新版部署应配置部署记录中的 Reader,以便服务提前识别暂停并跳过任务;未配置仅保留既有旧版批量读取适配,不会主动读取新版控制位,链上检查仍会拒绝被暂停操作。新版 Reader 不支持旧 Coordinator;显式启用后,读取失败、版本不符或接线不符必须报错,不能吞错退回旧版。Reader 与新地址均仍为 **pending deployment**,目前不要为旧部署填入虚构的 Reader 地址。
+
+### 11.6 maintainToken 链下调度
+
+`maintainToken` 是 Keeper 内部方法,不是新增链上函数或任意人可调用的资金入口。它按 **tax → liquidity → buyback** 的顺序安排允许且经济的任务。候选任务可以复用同一只读快照,但每次真正签名前 Signer 都重新读取状态并重新计算报价。已提交、已有提交或 Signer 忙碌时即停止本轮后续步骤,由后续持久化轮次继续;不为一个方法调用阻塞等待链上,也不把三个步骤强行合成一笔交易。
+
+签名前仍检查 Keeper 角色、链上开关、历史价格锚点、模拟、输出边界、冷却、余额与 Gas 预算。正常暂停和经济等待不作为交易失败刷告警,签名、广播或记账异常仍进入重试与诊断。没有增加链上批处理、任意目标 `call`、跨合约 `delegatecall`、资产托管或代币授权。
+
+部署成本沿用 EIP-1167 clone:Reader 全平台共享,`maintainToken` 在链下运行,BuybackVault 直接包含提款代码但通过既有 Coordinator 记录识别创建者,不新增 creator 存储或 initializer 参数。三个控制位使用一个 `uint8`,与已有布尔/地址状态一起打包;最终合约大小与部署 Gas 度量见 [维护设计](maintenance-design.md),须按实际编译结果记录,不将估计值当作已支付费用。

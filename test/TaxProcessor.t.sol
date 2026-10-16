@@ -15,9 +15,13 @@ import {
     UnauthorizedTaxKeeper,
     InvalidTaxAmount,
     UnsafeMinQuoteOut,
-    InvalidProcessingDeadline
+    InvalidProcessingDeadline,
+    LiquidityUnavailable
 } from "src/TaxProcessor.sol";
 import {TaxProcessorInitParams, PackedFeeConfig} from "src/lib/interfaces/ITaxProcessor.sol";
+import {ExecutionControls, ExecutionPaused} from "src/ExecutionControls.sol";
+
+error ExecutionRegistryUnavailable();
 
 contract MockERC20 {
     string public name;
@@ -149,9 +153,16 @@ contract TaxProcessorTest is Test {
 
     address feeReceiver = address(0xfee1);
     address keeper = address(0xCA11);
+    uint8 private _executionFlags = 7;
+    bool private _registryUnavailable;
 
     function hasRole(bytes32 role, address account) external view returns (bool) {
         return role == keccak256("KEEPER_ROLE") && account == keeper;
+    }
+
+    function executionFlags() external view returns (uint8) {
+        if (_registryUnavailable) revert ExecutionRegistryUnavailable();
+        return _executionFlags;
     }
 
     function setUp() public {
@@ -360,6 +371,149 @@ contract TaxProcessorTest is Test {
         vm.expectRevert(InvalidTaxAmount.selector);
         vm.prank(keeper);
         tp.processPendingTax(10001 ether, 900 ether, uint64(block.timestamp + 1 minutes));
+    }
+
+    function test_TaxPauseMakesNoTokenTransferOrRouterCall() public {
+        _queue(tp, 10_000 ether);
+        _executionFlags = ExecutionControls.LIQUIDITY | ExecutionControls.BUYBACK;
+        vm.expectCall(address(taxToken), abi.encodeWithSelector(MockERC20.transfer.selector), 0);
+        vm.expectCall(address(taxToken), abi.encodeWithSelector(MockERC20.transferFrom.selector), 0);
+        vm.expectCall(
+            address(router),
+            abi.encodeWithSelector(MockSwapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens.selector),
+            0
+        );
+
+        vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.TAX));
+        vm.prank(keeper);
+        tp.processPendingTax(10_000 ether, 9_900 ether, uint64(block.timestamp + 1 minutes));
+
+        assertEq(tp.pendingTaxTokens(), 10_000 ether);
+        assertEq(taxToken.balanceOf(address(tp)), 10_000 ether);
+        assertEq(wbnb.balanceOf(address(tp)), 0);
+        assertEq(feeReceiver.balance, 0);
+        assertEq(tp.totalQuoteSentToReceiver(), 0);
+        assertEq(tp.totalTaxTokenBurned(), 0);
+        assertEq(tp.lpTokenBalance(), 0);
+        assertEq(tp.pendingDirection(), 0);
+    }
+
+    function test_TaxPauseKeepsQueueingAvailableAndResumesExistingAssets() public {
+        _executionFlags = 0;
+        _queue(tp, 10_000 ether);
+        assertEq(tp.pendingTaxTokens(), 10_000 ether);
+        vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.TAX));
+        vm.prank(keeper);
+        tp.processPendingTax(10_000 ether, 9_900 ether, uint64(block.timestamp + 1 minutes));
+
+        _executionFlags = ExecutionControls.TAX;
+        assertEq(_process(tp, 10_000 ether, 9_900 ether), 10_000 ether);
+        assertEq(tp.pendingTaxTokens(), 0);
+        assertEq(feeReceiver.balance, 10_000 ether);
+    }
+
+    function testFuzz_TaxPauseIsIndependentOfOtherSwitches(uint8 flags) public {
+        _executionFlags = flags & 7;
+        _queue(tp, 1_000 ether);
+        if (_executionFlags & ExecutionControls.TAX == 0) {
+            vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.TAX));
+        }
+        vm.prank(keeper);
+        tp.processPendingTax(1_000 ether, 990 ether, uint64(block.timestamp + 1 minutes));
+        assertEq(tp.pendingTaxTokens(), _executionFlags & ExecutionControls.TAX == 0 ? 1_000 ether : 0);
+    }
+
+    function testFuzz_LiquidityPauseIsIndependentOfOtherSwitches(uint8 flags) public {
+        _executionFlags = flags & 7;
+        if (_executionFlags & ExecutionControls.LIQUIDITY == 0) {
+            vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.LIQUIDITY));
+        } else {
+            vm.expectRevert(LiquidityUnavailable.selector);
+        }
+        vm.prank(keeper);
+        tp.addPendingLiquidity(1 ether, 1, 1, 1, uint64(block.timestamp + 1 minutes));
+    }
+
+    function test_LiquidityPauseMakesNoAssetTransfer() public {
+        _executionFlags = ExecutionControls.TAX | ExecutionControls.BUYBACK;
+        vm.expectCall(address(taxToken), abi.encodeWithSelector(MockERC20.transfer.selector), 0);
+        vm.expectCall(address(wbnb), abi.encodeWithSelector(MockERC20.transfer.selector), 0);
+        vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.LIQUIDITY));
+        vm.prank(keeper);
+        tp.addPendingLiquidity(1 ether, 1, 1, 1, uint64(block.timestamp + 1 minutes));
+    }
+
+    function test_PendingBurnChecksTaxPauseAndRetainsQuoteUntilResumed() public {
+        TaxProcessor processor = new TaxProcessor(address(this));
+        TaxProcessorInitParams memory params = _params(0);
+        params.marketBps = 0;
+        params.marketAddress = address(0);
+        params.deflationBps = 10_000;
+        processor.initialize(params);
+        _executionFlags = 0;
+        wbnb.mint(address(taxToken), 500 ether);
+        vm.prank(address(taxToken));
+        wbnb.approve(address(processor), type(uint256).max);
+        vm.prank(address(taxToken));
+        processor.processBondingCurveTax(500 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(ExecutionPaused.selector, ExecutionControls.TAX));
+        vm.prank(keeper);
+        processor.processPendingBurn(500 ether, 490 ether, uint64(block.timestamp + 1 minutes));
+        assertEq(processor.pendingDeflationQuoteBalance(), 500 ether);
+        assertEq(wbnb.balanceOf(address(processor)), 500 ether);
+        assertEq(wbnb.allowance(address(processor), address(router)), 0);
+        assertEq(processor.totalQuoteBurned(), 0);
+        assertEq(taxToken.balanceOf(address(0xdead)), 0);
+
+        _executionFlags = ExecutionControls.TAX;
+        vm.prank(keeper);
+        assertEq(processor.processPendingBurn(500 ether, 490 ether, uint64(block.timestamp + 1 minutes)), 500 ether);
+        assertEq(processor.pendingDeflationQuoteBalance(), 0);
+        assertEq(processor.totalQuoteBurned(), 500 ether);
+        assertEq(taxToken.balanceOf(address(0xdead)), 500 ether);
+    }
+
+    function test_PausedControlsDoNotBlockDispatchOrDeferredDividendDeposit() public {
+        MockDividend dividend = new MockDividend(wbnb);
+        dividend.setFailDeposit(true);
+        TaxProcessor processor = new TaxProcessor(address(this));
+        TaxProcessorInitParams memory params = _params(0);
+        params.marketBps = 0;
+        params.marketAddress = address(0);
+        params.dividendBps = 10_000;
+        params.dividendAddress = address(dividend);
+        processor.initialize(params);
+        _executionFlags = 0;
+        wbnb.mint(address(taxToken), 500 ether);
+        vm.prank(address(taxToken));
+        wbnb.approve(address(processor), type(uint256).max);
+        vm.prank(address(taxToken));
+        processor.processBondingCurveTax(500 ether);
+        assertEq(processor.pendingDividendQuoteTokenBalance(), 500 ether);
+
+        dividend.setFailDeposit(false);
+        wbnb.mint(address(processor), 10 ether);
+        processor.dispatch();
+        assertEq(dividend.totalDeposited(), 500 ether);
+        assertEq(processor.pendingDividendQuoteTokenBalance(), 0);
+        assertEq(feeReceiver.balance, 10 ether, "fixed-recipient dispatch remains live during pauses");
+    }
+
+    function test_ExecutionRegistryReadFailureCannotEnableAnyKeeperOperation() public {
+        _queue(tp, 1_000 ether);
+        _registryUnavailable = true;
+        vm.expectRevert(ExecutionRegistryUnavailable.selector);
+        vm.prank(keeper);
+        tp.processPendingTax(1_000 ether, 990 ether, uint64(block.timestamp + 1 minutes));
+        vm.expectRevert(ExecutionRegistryUnavailable.selector);
+        vm.prank(keeper);
+        tp.addPendingLiquidity(1 ether, 1, 1, 1, uint64(block.timestamp + 1 minutes));
+        vm.expectRevert(ExecutionRegistryUnavailable.selector);
+        vm.prank(keeper);
+        tp.processPendingBurn(1 ether, 1, uint64(block.timestamp + 1 minutes));
+        assertEq(tp.pendingTaxTokens(), 1_000 ether);
+        assertEq(feeReceiver.balance, 0);
     }
 
     // -------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import {TransferHelper} from "src/TransferHelper.sol";
 import {BuybackVaultFactory} from "src/BuybackVaultFactory.sol";
 import {BuybackConfig} from "src/BuybackVault.sol";
 import {TaxInfrastructureFactory} from "src/TaxInfrastructureFactory.sol";
+import {ExecutionControls} from "src/ExecutionControls.sol";
 
 // ---------------------------------------------------------------------------
 // 自定义错误
@@ -71,6 +72,8 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     address public routerAddress;
 
     bool public factoryEnabled = true;
+    /// @notice Global maintenance permissions: tax=1, liquidity=2, buyback=4. Does not pause tax collection.
+    uint8 public executionFlags = ExecutionControls.ALL;
     uint256 public creationFee = 0.005 ether; // 0.005 BNB = 5e15 wei
     uint256 public reservationFee = 0.001 ether; // 锁定 CA（预留确定性地址）服务费，独立于创建费、不抵扣
     uint256 public totalPairsCreated = 0;
@@ -126,6 +129,7 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
         address indexed token, address indexed presale, uint256 creatorShare, uint256 poolShare, uint256 presaleShare
     );
     event FactoryEnabledSet(bool enabled);
+    event ExecutionControlsUpdated(uint8 executionFlags);
     event CreationFeeSet(uint256 fee);
     event ReservationFeeSet(uint256 fee);
     event AllocationUpdated(uint256 creatorBps, uint256 poolBps, uint256 presaleBps);
@@ -463,6 +467,17 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     function setFactoryEnabled(bool _enabled) external onlyAdmin {
         factoryEnabled = _enabled;
         emit FactoryEnabledSet(_enabled);
+    }
+
+    /// @notice Three independent global execution switches; three false values pause all maintenance.
+    function setExecutionControls(bool taxProcessingEnabled, bool liquidityEnabled, bool buybackEnabled)
+        external
+        onlyAdmin
+    {
+        uint8 flags = (taxProcessingEnabled ? ExecutionControls.TAX : 0)
+            | (liquidityEnabled ? ExecutionControls.LIQUIDITY : 0) | (buybackEnabled ? ExecutionControls.BUYBACK : 0);
+        executionFlags = flags;
+        emit ExecutionControlsUpdated(flags);
     }
 
     function setCreationFee(uint256 _fee) external onlyAdmin {
