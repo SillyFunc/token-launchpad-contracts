@@ -85,6 +85,9 @@ error InvalidPoolReserves();
 error ReserveCapBelowMinimum();
 error UnsafeExecutionAmount(uint256 requested, uint256 maximum);
 error InvalidLpRatio();
+// [TEMP-RECOVERY] 上线前临时回收错误,正式上线前删除
+error UnauthorizedVaultRecovery();
+error InvalidVaultRecoveryRecipient();
 
 /// @notice 自动回购金库：接收 TaxProcessor 清算所得 BNB，按发币配置买回并销毁（或加 LP 死锁）。
 /// @dev `executeBuyback` 仅允许 CoordinatorFactory 授权的 keeper 调用。
@@ -180,6 +183,30 @@ contract BuybackVault is ReentrancyGuard {
     /// @dev 只收 BNB、记账。TaxProcessor 清算会走这条路径；零值 ping 静默忽略。
     receive() external payable {
         if (msg.value > 0) emit RevenueReceived(msg.sender, msg.value);
+    }
+
+    // [TEMP-RECOVERY] 上线前临时回收入口:仅用于弃用测试实例时归集团队自有资产。
+    // 正式上线前必须删除本段、VaultRecovery 事件及上方两个错误。
+    event VaultRecovery(address indexed to, uint256 nativeAmount, uint256 wbnbAmount, uint256 tokenAmount);
+
+    /// @notice [TEMP-RECOVERY] 全额回收 BNB、WBNB 与本币到 `to`。仅 keeperRegistry(Coordinator)的 DEFAULT_ADMIN_ROLE 可调。
+    /// @dev 不推进冷却、不改变回购次数与统计;余额为零的资产跳过。任一步转账失败整笔回滚。
+    function temporaryRecoverAll(address to) external nonReentrant {
+        // keeperRegistry 即 CoordinatorFactory;DEFAULT_ADMIN_ROLE == bytes32(0)
+        if (!IAccessControl(keeperRegistry).hasRole(bytes32(0), msg.sender)) revert UnauthorizedVaultRecovery();
+        if (to == address(0) || to == address(this) || to == token || to == wbnb || to == pair || to == DEAD) {
+            revert InvalidVaultRecoveryRecipient();
+        }
+
+        uint256 nativeAmount = address(this).balance;
+        uint256 wbnbAmount = IERC20(wbnb).balanceOf(address(this));
+        uint256 tokenAmount = IERC20(token).balanceOf(address(this));
+
+        // 资产转出顺序:ERC20 先行,原生 BNB 最后(接收方回调已由 nonReentrant 阻断)
+        if (tokenAmount != 0) TransferHelper.safeTransfer(token, to, tokenAmount);
+        if (wbnbAmount != 0) TransferHelper.safeTransfer(wbnb, to, wbnbAmount);
+        if (nativeAmount != 0) TransferHelper.safeTransferETH(to, nativeAmount);
+        emit VaultRecovery(to, nativeAmount, wbnbAmount, tokenAmount);
     }
 
     /// @notice 条件满足时执行一笔回购。仅 CoordinatorFactory 授权的 keeper 可调用。

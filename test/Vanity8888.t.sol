@@ -67,8 +67,8 @@ contract Vanity8888Test is Test {
         assertEq(token, predicted);
         assertEq(uint160(token) & 0xFFFF, SUFFIX, "token address must end with 8888");
 
-        // 免预约费：仅扣 0.005 creationFee，多付退还
-        assertEq(creator.balance, balanceBefore - 0.005 ether, "only creationFee charged");
+        // 免预约费：仅扣 0.0001 creationFee，多付退还
+        assertEq(creator.balance, balanceBefore - 0.0001 ether, "only creationFee charged");
 
         // 全流程接线与历史一致：全量入托管仓、所有权交托管仓、注册完整
         assertEq(IERC20Lite(token).balanceOf(presale), SUPPLY);

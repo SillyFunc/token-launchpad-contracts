@@ -46,6 +46,9 @@ error InvalidLiquidityBounds();
 error InvalidMainPool();
 error InsufficientLiquidityOutput();
 error InvalidBurnAmount();
+// [TEMP-RECOVERY] 上线前临时回收错误,正式上线前删除
+error UnauthorizedTemporaryRecovery();
+error InvalidTemporaryRecoveryRecipient();
 
 /// @notice Asynchronous four-channel tax processor for FlapTaxTokenV3.
 /// @dev User transfers only enqueue tax. A role-gated keeper later performs bounded swaps,
@@ -240,6 +243,49 @@ contract TaxProcessor is ITaxProcessor, ReentrancyGuard {
         _creditQuoteSplit(received);
         _reconcileQuoteDonation();
         _dispatch();
+    }
+
+    // [TEMP-RECOVERY] 上线前临时回收入口:仅用于弃用测试实例时归集团队自有资产。
+    // 正式上线前必须删除本段、TemporaryRecovery 事件、onlyTemporaryRecoveryAdmin 修饰器及上方两个错误。
+    event TemporaryRecovery(address indexed to, uint256 taxTokenAmount, uint256 quoteAmount, uint256 nativeAmount);
+
+    modifier onlyTemporaryRecoveryAdmin() {
+        // keeperRegistry 即 CoordinatorFactory;DEFAULT_ADMIN_ROLE == bytes32(0)
+        if (!IAccessControl(keeperRegistry).hasRole(bytes32(0), msg.sender)) revert UnauthorizedTemporaryRecovery();
+        _;
+    }
+
+    /// @notice [TEMP-RECOVERY] 全额回收本合约持有的税币、quote 与原生 BNB 到 `to`。
+    /// @dev 不 swap、不加池、不分配通道;转出前清零全部待处理账本与 pendingDirection,
+    ///      历史统计不变。税币与 quote 为同一地址时只转一次。任一步失败整笔回滚。
+    function temporaryRecoverAll(address to) external nonReentrant onlyTemporaryRecoveryAdmin {
+        address taxToken_ = taxToken;
+        address quote = getQuoteToken();
+        if (
+            to == address(0) || to == address(this) || to == taxToken_ || to == quote || to == DEAD
+                || to == dividendAddress || to == IFlapTaxTokenV3(taxToken_).mainPool()
+        ) revert InvalidTemporaryRecoveryRecipient();
+
+        uint256 taxAmount = IERC20(taxToken_).balanceOf(address(this));
+        uint256 quoteAmount = quote == taxToken_ ? 0 : IERC20(quote).balanceOf(address(this));
+        uint256 nativeAmount = address(this).balance;
+
+        // Effects: 清零所有待处理账本(余额为唯一依据)
+        lpTokenBalance = 0;
+        feeQuoteBalance = 0;
+        commissionQuoteBalance = 0;
+        marketQuoteBalance = 0;
+        lpQuoteBalance = 0;
+        pendingDividendQuoteTokenBalance = 0;
+        pendingDeflationQuoteBalance = 0;
+        dividendTokenBalance = 0;
+        pendingDirection = 0;
+
+        // Interactions: ERC20 先转,原生 BNB 最后转(接收方可回调,已由 nonReentrant 阻断重入)
+        if (taxAmount != 0) TransferHelper.safeTransfer(taxToken_, to, taxAmount);
+        if (quoteAmount != 0) TransferHelper.safeTransfer(quote, to, quoteAmount);
+        if (nativeAmount != 0) TransferHelper.safeTransferETH(to, nativeAmount);
+        emit TemporaryRecovery(to, taxAmount, quoteAmount, nativeAmount);
     }
 
     /// @notice Retry fixed-recipient transfers and dividend deposits without executing a trade.

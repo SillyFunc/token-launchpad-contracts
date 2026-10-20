@@ -300,8 +300,13 @@ contract CoordinatorTest is Test {
         bytes32 salt = _vanitySalt("refund-case");
         vm.prank(creator);
         coordinator.createToken{value: 1 ether}(_tokenConfig(), salt);
-        // 仅扣 0.005 创建费，多付全额退还
-        assertEq(creator.balance, balanceBefore - 0.005 ether);
+        // 仅扣 0.0001 创建费，多付全额退还
+        assertEq(creator.balance, balanceBefore - 0.0001 ether);
+    }
+
+    function test_DefaultPlatformFees() public view {
+        assertEq(coordinator.creationFee(), 0.0001 ether);
+        assertEq(coordinator.reservationFee(), 0.0001 ether);
     }
 
     function test_TaxProcessorMarketOnlyWiring() public {
