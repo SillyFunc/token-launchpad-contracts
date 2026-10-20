@@ -71,8 +71,8 @@ contract CoordinatorFactory is AccessControl, ReentrancyGuard {
     address public routerAddress;
 
     bool public factoryEnabled = true;
-    uint256 public creationFee = 0.0001 ether; // 0.0001 BNB = 1e14 wei
-    uint256 public reservationFee = 0.0001 ether; // 锁定 CA（预留确定性地址）服务费，独立于创建费、不抵扣
+    uint256 public creationFee = 0.0001 ether;
+    uint256 public reservationFee = 0.0001 ether;
     uint256 public totalPairsCreated = 0;
 
     /// @notice 代币分配比例（bps，和恒为 10000）：默认 30% 创建者 / 20% 底池 / 50% 预售
