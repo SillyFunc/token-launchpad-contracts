@@ -6,6 +6,9 @@ out/
 .logs/
 .ignore/
 
+# SVN working-copy metadata
+.svn/
+
 # Ignores development broadcast logs
 !/broadcast
 /broadcast/*/31337/
