@@ -25,9 +25,7 @@ contract Deploy is Script {
 
         vm.startBroadcast();
 
-        // 新部署归集阈值：MIN=5 万枚，START=40 万枚（固定 10 亿总量的 0.005% / 0.04%）。
-        // 参数固化在实现合约中；已有模板、工厂与代币仍使用原部署值。
-        FlapTaxTokenV3 flapImpl = new FlapTaxTokenV3(50_000 ether, 400_000 ether);
+        FlapTaxTokenV3 flapImpl = _deployFlapImplementation();
 
         // 工厂与 Coordinator 存在循环引用：先建工厂（coordinator 占位 0），建好 Coordinator 后授权
         TokenFactory tokenFactory = new TokenFactory(address(flapImpl), router, address(0));
@@ -53,6 +51,8 @@ contract Deploy is Script {
         coordinator.setBuybackVaultFactory(address(buybackFactory));
 
         console2.log("FlapTaxTokenV3 impl:", address(flapImpl));
+        console2.log("MIN_LIQ_THRESHOLD (tokens):", flapImpl.MIN_LIQ_THRESHOLD() / 1 ether);
+        console2.log("START_LIQ_THRESHOLD (tokens):", flapImpl.START_LIQ_THRESHOLD() / 1 ether);
         console2.log("TokenFactory:", address(tokenFactory));
         console2.log("PRESALE template:", address(presaleTemplate));
         console2.log("PresaleFactory:", address(presaleFactory));
@@ -87,5 +87,15 @@ contract Deploy is Script {
         vm.createDir(deploymentDirectory, true);
         string memory deploymentPath = string.concat(deploymentDirectory, "/", vm.toString(block.chainid), ".json");
         vm.writeJson(deploymentJson, deploymentPath);
+    }
+
+    /// @dev 新部署归集阈值：MIN=5 万枚，START=40 万枚（固定 10 亿总量的 0.005% / 0.04%）。
+    ///      参数固化在实现合约中；已有模板、工厂与代币仍使用原部署值。
+    ///      仅上线前主网验收可用整枚数覆盖（LIQ_THRESHOLD_*_TOKENS）；正式部署必须不设置，见 docs/pre-launch-cleanup.md。
+    function _deployFlapImplementation() internal returns (FlapTaxTokenV3) {
+        uint256 minLiqThreshold = vm.envOr("LIQ_THRESHOLD_MIN_TOKENS", uint256(50_000)) * 1 ether;
+        uint256 startLiqThreshold = vm.envOr("LIQ_THRESHOLD_START_TOKENS", uint256(400_000)) * 1 ether;
+        require(minLiqThreshold != 0 && minLiqThreshold <= startLiqThreshold, "invalid liquidation thresholds");
+        return new FlapTaxTokenV3(minLiqThreshold, startLiqThreshold);
     }
 }

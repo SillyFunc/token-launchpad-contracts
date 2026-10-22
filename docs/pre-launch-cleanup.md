@@ -63,6 +63,27 @@ cast call <IMPLEMENTATION_ADDRESS> "temporaryRecoverAll(address)" 0x000000000000
 - [ ] BuybackVault 实现：选择器不存在
 - [ ] 区块浏览器上验证的源码中不含 `temporaryRecoverAll`
 
+## 5. 复位主网验收专用配置
+
+验收流程（`docs/mainnet-keeper-test.md`）允许调低初始清算阈值、使用 keeper 的 `env.test`，正式部署前逐项复位：
+
+- [ ] 正式部署命令与 `.env` 中都**没有** `LIQ_THRESHOLD_MIN_TOKENS` / `LIQ_THRESHOLD_START_TOKENS`；部署日志显示 `MIN_LIQ_THRESHOLD (tokens): 50000`、`START_LIQ_THRESHOLD (tokens): 400000`。
+- [ ] 链上核验新的 `flapTaxTokenImplementation`：
+
+  ```bash
+  cast call <FLAP_IMPLEMENTATION_ADDRESS> "START_LIQ_THRESHOLD()(uint256)" --rpc-url bsc
+  ```
+
+  ```bash
+  cast call <FLAP_IMPLEMENTATION_ADDRESS> "MIN_LIQ_THRESHOLD()(uint256)" --rpc-url bsc
+  ```
+
+  输出分别为 `400000000000000000000000` 与 `50000000000000000000000`。
+- [ ] 验收环境的 Worker、Workflow 与 D1（均名为 `token-launchpad-keeper-mainnet-test`）已按 `docs/mainnet-keeper-test.md` 第 6 节删除；正式 Worker 用 `pnpm deploy`（不带 `--env test`）部署，使用正式 Keeper 钱包。
+- [ ] 正式部署后核对 `keeper/wrangler.jsonc` 顶层 `d1_databases`：wrangler 自动创建数据库时会把 ID 写回顶层配置，名称必须是 `token-launchpad-keeper-mainnet`，不得出现验收库名称或其 ID `1d9ad5bc-…`。
+- [ ] `script/deployments/56.json` 指向正式部署；验收地址（`56-mainnet-test.json`）不被前端文档或 SDK 引用。
+- [ ] 正式部署完成后删除 `docs/mainnet-keeper-test.md`。
+
 ## 当前影响面（截至编写时已核对）
 
 - 仅 `src/TaxProcessor.sol`、`src/BuybackVault.sol`、`test/TemporaryRecovery.t.sol` 涉及。

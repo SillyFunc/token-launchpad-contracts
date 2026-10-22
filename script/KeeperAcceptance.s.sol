@@ -13,7 +13,8 @@ import {FlapTaxTokenV3} from "src/lib/token/FlapTaxTokenV3.sol";
 import {IPancakeRouter02, IPancakePair} from "src/lib/interfaces/IPancakeRouter02.sol";
 import {VanitySaltFinder} from "../test/TokenReservation.t.sol";
 
-/// @notice 测试网 Keeper 端到端验收脚本，对应 docs/keeper-cloudflare.md 阶段 E 第 3~7 步。
+/// @notice Keeper 端到端验收脚本。默认仅限 BSC 测试网；上线前主网验收须显式设置
+///         ACCEPTANCE_ALLOW_MAINNET=true，流程见 docs/mainnet-keeper-test.md。
 /// @dev 入口（用 `--sig` 调用）：
 ///      1. create()：一笔广播内完成 发币(带金库) → claimAllTokens 领取即上线 → 加 Pancake V2 底池
 ///                   → 两笔卖出把税推过动态清算阈值。建池与卖出必须同批，否则 Keeper 的
@@ -30,6 +31,7 @@ import {VanitySaltFinder} from "../test/TokenReservation.t.sol";
 ///          --rpc-url <BSC testnet RPC> --account launchpad-testnet-deployer --legacy --broadcast --slow
 contract KeeperAcceptance is Script {
     uint256 internal constant BSC_TESTNET_CHAIN_ID = 97;
+    uint256 internal constant BSC_MAINNET_CHAIN_ID = 56;
     uint64 internal constant DEADLINE_DELAY = 20 minutes;
     /// @dev SELL_TAX_BPS=1000 时单笔 1e8 枚产出 1e7 枚税代币，足以跨过新旧模板的归集阈值。
     uint256 internal constant DEFAULT_SELL_TOKENS = 100_000_000 ether;
@@ -48,7 +50,7 @@ contract KeeperAcceptance is Script {
     // -----------------------------------------------------------------------
 
     function create() external {
-        _requireTestnet();
+        _requireAcceptanceChain();
         CoordinatorFactory coordinator = _coordinator();
         address router = coordinator.routerAddress();
         uint256 creationFee = coordinator.creationFee();
@@ -125,7 +127,7 @@ contract KeeperAcceptance is Script {
     /// @notice 恢复 create() 在代币已创建、已领取，但加池前因本地广播文件锁中断的验收。
     /// @dev 只允许对当前 Coordinator 注册的、尚无 LP 的验收资产使用；不会重复创建代币。
     function completeSetup() external {
-        _requireTestnet();
+        _requireAcceptanceChain();
         Artifact memory artifact = _readArtifact();
         CoordinatorFactory coordinator = _coordinator();
         require(coordinator.tokenVaults(artifact.token) == artifact.vault, "vault not registered in coordinator");
@@ -157,7 +159,7 @@ contract KeeperAcceptance is Script {
     // -----------------------------------------------------------------------
 
     function trade() external {
-        _requireTestnet();
+        _requireAcceptanceChain();
         Artifact memory artifact = _readArtifact();
         address router = _coordinator().routerAddress();
         uint256 sellTokens = vm.envOr("ACCEPTANCE_SELL_TOKENS", DEFAULT_SELL_TOKENS);
@@ -176,7 +178,7 @@ contract KeeperAcceptance is Script {
     // -----------------------------------------------------------------------
 
     function status() external view {
-        _requireTestnet();
+        _requireAcceptanceChain();
         Artifact memory artifact = _readArtifact();
         console2.log("token:", artifact.token);
         console2.log("vault:", artifact.vault);
@@ -201,8 +203,12 @@ contract KeeperAcceptance is Script {
         }
     }
 
-    function _requireTestnet() internal view {
-        require(block.chainid == BSC_TESTNET_CHAIN_ID, "keeper acceptance is BSC testnet only");
+    function _requireAcceptanceChain() internal view {
+        if (block.chainid == BSC_TESTNET_CHAIN_ID) return;
+        require(
+            block.chainid == BSC_MAINNET_CHAIN_ID && vm.envOr("ACCEPTANCE_ALLOW_MAINNET", false),
+            "keeper acceptance: BSC testnet, or mainnet with ACCEPTANCE_ALLOW_MAINNET=true"
+        );
     }
 
     function _coordinator() internal view returns (CoordinatorFactory) {
